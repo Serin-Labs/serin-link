@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  firmware:
+    name: firmware (${{ matrix.board }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: viewe15
+            defaults: "sdkconfig.defaults;sdkconfig.defaults.viewe"
+          - board: viewe21
+            defaults: "sdkconfig.defaults;sdkconfig.defaults.viewe21"
+    steps:
+      - uses: actions/checkout@v4
+      # -DSDKCONFIG must be pinned into the build dir: without it IDF would
+      # reuse a root ./sdkconfig and silently ignore the defaults chain.
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32s3
+          command: >
+            idf.py -B build_${{ matrix.board }}
+            -DSDKCONFIG=build_${{ matrix.board }}/sdkconfig
+            -DSDKCONFIG_DEFAULTS="${{ matrix.defaults }}"
+            build
+
+  host-tests:
+    name: host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: test/run-all.sh

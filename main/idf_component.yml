@@ -1,0 +1,13 @@
+dependencies:
+  idf: ">=5.1"
+  lvgl/lvgl: "^9.2.0"
+  espressif/esp_lvgl_port: "^2.4.0"
+  # VIEWE 2.1" touch (its ST7701S init is hand-rolled in bsp_viewe21.c)
+  espressif/esp_lcd_touch_cst816s: "^1.1.1"
+  # VIEWE 1.5" display/touch/knob (versions match VIEWE's ESP-IDF reference)
+  espressif/esp_lcd_sh8601: "^1.0.0"
+  kodediy/esp_lcd_touch_cst820: "^1.0.0"
+  espressif/knob: "1.0.0"
+  espressif/button: "3.3.1"
+  # Serin Link v2 pairing crypto (Ed25519 identity + X25519; mbedTLS has no EdDSA)
+  espressif/libsodium: "^1.0.20"

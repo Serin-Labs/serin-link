@@ -1,0 +1,40 @@
+# ESP-IDF build
+build/
+build_*/
+dist/
+sdkconfig
+sdkconfig.old
+sdkconfig.signkey.tmp
+managed_components/
+
+# Factory build outputs
+build_fac_*/
+dist_factory/
+
+# IDE / OS / editor
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*:Zone.Identifier
+__pycache__/
+
+# Secrets — never commit
+secure_boot_signing_key.pem
+*.pem
+*_key.bin
+*_sk.hex
+
+# Isolated artwork toolchain (sources and lockfiles remain tracked)
+tools/artwork/node_modules/
+tools/artwork/.venv/
+
+# Native UI simulator dependencies and interactive preferences
+sim/.cache/
+sim/.prefs
+/.prefs
+.venv/
+
+# Icon generator output
+icon_masters/

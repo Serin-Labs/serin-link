@@ -1,0 +1,12 @@
+# Serin Link partition table — ESP32-S3, 16MB flash, dual OTA, no factory app.
+# Table at 0x8000 (CONFIG_PARTITION_TABLE_OFFSET); the blank offsets pack nvs
+# (0x9000), otadata and phy_init below ota_0. ota_0 is pinned at 0x20000 — it
+# must NOT be 0x10000, which would overlap phy_init here — and 64K-aligned so
+# the app maps at a flash-MMU page boundary. Rollback on a bad update comes
+# from CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE plus the mark-valid in link_ota.c.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x6000,
+otadata,  data, ota,     ,        0x2000,
+phy_init, data, phy,     ,        0x1000,
+ota_0,    app,  ota_0,   0x20000, 0x400000,
+ota_1,    app,  ota_1,   ,        0x400000,

@@ -1,0 +1,252 @@
+menu "Serin board"
+
+choice SERIN_BOARD
+    prompt "Target board"
+    default SERIN_BOARD_VIEWE_15
+    help
+        Select the hardware. Pair each board with its sdkconfig overlay, e.g.
+        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.viewe".
+
+config SERIN_BOARD_VIEWE_15
+    bool "VIEWE 1.5\" Touch-Knob (SH8601 466x466 QSPI AMOLED)"
+    help
+        VIEWE UEDX46460015-MD50ET. ESP32-S3R8 + PSRAM, CST820 touch, rotary
+        knob + BOOT button. Overlay: sdkconfig.defaults.viewe.
+
+config SERIN_BOARD_VIEWE_21
+    bool "VIEWE 2.1\" Touch-Knob (ST7701S 480x480 RGB)"
+    help
+        VIEWE UEDX48480021-MD80ET. ESP32-S3R8 (16MB flash, 8MB OPI PSRAM),
+        CST816S touch, rotary encoder + BOOT-button knob press, no I/O
+        expander. The UI lays out at 480x480 here, not the 1.5"'s 466.
+        Overlay: sdkconfig.defaults.viewe21.
+
+endchoice
+
+config SERIN_SHT40
+    bool "SHT40 temperature/humidity sensor (USB carrier PCB)"
+    default y if SERIN_BOARD_VIEWE_15
+    default n
+    help
+        Read the Sensirion SHT40 on the VIEWE 1.5" USB carrier PCB and offer
+        the dial to the controller as a room-temperature source. Presence is
+        probed at boot -- a dial without the carrier behaves exactly as before.
+        Compiled out entirely when off.
+
+config SERIN_SHT40_SDA_GPIO
+    int "SHT40 I2C SDA GPIO"
+    depends on SERIN_SHT40
+    default 39
+    help
+        Carrier CN3 pin 6 -> VIEWE flex pin 5. NOT the CST820 touch bus.
+        GPIO39/40 are the S3's MTCK/MTDO external-JTAG pins; claiming them
+        costs external JTAG only (USB Serial/JTAG on 19/20 is untouched).
+
+config SERIN_SHT40_SCL_GPIO
+    int "SHT40 I2C SCL GPIO"
+    depends on SERIN_SHT40
+    default 40
+    help
+        Carrier CN3 pin 7 -> VIEWE flex pin 4.
+
+config SERIN_SHT40_RH_GAIN_PPT
+    int "SHT40 self-heating humidity gain (parts per thousand)"
+    depends on SERIN_SHT40
+    default 1000
+    range 500 2000
+    help
+        Every humidity reading is MULTIPLIED by this / 1000 before it leaves the
+        dial. 1000 means no correction.
+
+        A gain, not an offset, because this is not a humidity error: it is
+        SERIN_SHT40_OFFSET_CC showing up in the humidity channel. A sensor
+        sitting dT above ambient reads relative humidity depressed by
+        Psat(T)/Psat(T+dT), which is proportional to the reading -- so a fixed
+        %RH offset fitted at one humidity is visibly wrong at another.
+
+        Measure it as a RATIO against a reference, not a difference. The two
+        differ in stability by about 4x, which is how you can tell the
+        multiplicative model is the right one.
+
+config SERIN_SHT40_OFFSET_CC
+    int "SHT40 self-heating offset (centi-degrees C)"
+    depends on SERIN_SHT40
+    default 0
+    range -2000 2000
+    help
+        Subtracted from every reading before it leaves the dial. The sensor
+        sits behind an AMOLED next to a Wi-Fi-up S3 and reads HIGH -- typically
+        several degrees in a sealed enclosure. This is the Idle screen = GLANCE
+        value: measure it with the panel lit at idle, which is what Glance
+        leaves it doing. Idle screen = Off is derived from it via
+        SERIN_SHT40_IDLE_OFF_DELTA_CC.
+
+        Default 0 until measured on an assembled unit against a reference; the
+        NVS value set by the `sensor-offset` console command overrides this.
+
+config SERIN_SHT40_IDLE_OFF_DELTA_CC
+    int "SHT40 offset reduction when Idle screen = Off (centi-degrees C)"
+    depends on SERIN_SHT40
+    default 0
+    range 0 2000
+    help
+        Subtracted from SERIN_SHT40_OFFSET_CC while Advanced -> Idle screen is
+        set to Off. That pref sleeps the panel after 120 s instead of showing
+        the lit glance face, so the sensor behind it settles cooler and LESS
+        self-heating must be corrected away.
+
+        Not per-device: this is a property of the panel's power draw, not of
+        the individual unit, so there is no NVS override -- only the absolute
+        level needs per-unit calibration. Default 0 makes both modes identical,
+        i.e. exactly the behaviour before this existed; the board overlay pins
+        the measured value.
+
+config SERIN_SHT40_AIRFLOW_DELTA_CC
+    int "SHT40 offset reduction while the unit moves air (centi-degrees C)"
+    depends on SERIN_SHT40
+    default 0
+    range 0 2000
+    help
+        Eased off SERIN_SHT40_OFFSET_CC (first-order; ~10 min easing in,
+        ~25 min easing back out) while the bonded unit's indoor blower runs
+        -- the STATE stream's
+        action byte says heating/cooling/drying/fan. Self-heating rise is
+        P/(h*A): forced room air past the dial raises h, so the sensor
+        genuinely sits cooler and LESS must be corrected away.
+
+        Forced air reduces the still-air residual, easing in with tau ~10 min
+        and recovering over ~25 min -- the
+        enclosure re-soaks under natural convection far slower than forced
+        air strips it -- so the blend is asymmetric; see
+        sht40_airflow_regime_step_q8.
+
+        OFFSET_CC is therefore defined as the STILL-AIR value: calibrate it
+        with the HVAC not actively running, and let this term handle the rest.
+
+        PER-INSTALL, not per-board: the
+        number depends on where the dial sits relative to the supply air, so
+        like the base offset it lives in NVS (`sht_air_cc`, set with
+        `sensor-airflow`); this symbol is only the default for a unit never
+        trimmed. 0 = the fixed-offset behaviour from before this existed, and
+        the safe default: an under-correction shows only while the fan runs,
+        an over-correction lingers ~40 min after it stops. Recipe: one cooling
+        run of 45 min or more with this at 0; delta = (still-air residual
+        before) - (residual 30-45 min in); below ~6 leave it at 0.
+
+config SERIN_PERF_STATS
+    bool "Perf instrumentation (render/flush timing, heap, CPU share)"
+    default n
+    help
+        Build the perf_stats harness: LVGL render/flush microsecond timing,
+        heap-headroom logs and perf-dump/perf-glide/perf-nav console commands.
+        Enable via the sdkconfig.perf overlay, e.g.
+        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.viewe;sdkconfig.perf".
+        Do not use LV_USE_PERF_MONITOR instead — it counts refr ticks, not
+        redraws, on this stack.
+
+config SERIN_LINK_OTA_MANIFEST_URL
+    string "Link firmware manifest URL"
+    default "https://github.com/Serin-Labs/serin-link/releases/latest/download/manifest.json"
+    help
+        Fetched over HTTPS when the user runs the update check from
+        Settings -> System. Each build's `path` in the manifest is resolved
+        relative to this URL's directory, so a manifest published as a GitHub
+        release asset sends the dial to link15-app.bin beside it. Asset names
+        are flat because a release asset name cannot contain '/'.
+
+        This is only the built-in default. The `ota-url` console command
+        overrides it per channel in NVS, so a dial can be pointed at a
+        self-hosted manifest without a rebuild -- which is also what you want
+        if you sign with your own key, since an image signed by anyone else
+        fails the signature check after it downloads. For LAN bench tests use
+        the sdkconfig.otadev overlay (plain http:// needs
+        ESP_HTTPS_OTA_ALLOW_HTTP).
+
+config SERIN_LINK_OTA_MANIFEST_BETA_URL
+    string "Link beta-channel manifest URL (empty = no beta channel)"
+    default "https://github.com/Serin-Labs/serin-link/releases/download/beta/manifest.json"
+    help
+        Same shape as the stable manifest, on a separate rolling `beta`
+        release; published by `tools/publish_fw.py --channel beta`. That
+        release must stay flagged as a GitHub pre-release -- published as a
+        normal release it becomes `latest`, and every dial on the stable
+        channel would silently start taking beta builds. Used instead of the stable URL
+        while the NVS pref `ota_beta` is set (console: `ota-channel beta`),
+        mirroring the controller's opt-in beta toggle. Leave empty to compile
+        the channel out: `ota-channel beta` is then refused.
+
+config SERIN_THERMAL_CAL
+    bool "Thermal calibration rig (calibration builds only)"
+    depends on SERIN_SHT40 && SERIN_BOARD_VIEWE_15
+    default n
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_DISPLAY_TEST
+    bool "Display-control verification cycle (instead of the sweep)"
+    depends on SERIN_THERMAL_CAL
+    default n
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_PROFILE_SHORT
+    bool "Short profile: 4 regimes (~2.7 h) instead of 9 (~6.5 h)"
+    depends on SERIN_THERMAL_CAL
+    default n
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_DWELL_MIN
+    int "Regime dwell (minutes)"
+    depends on SERIN_THERMAL_CAL
+    default 20
+    range 2 120
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_BASELINE_MIN
+    int "Baseline dwell between regimes (minutes)"
+    depends on SERIN_THERMAL_CAL
+    default 20
+    range 2 120
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_SETTLE_MIN
+    int "Initial settle before the first step (minutes)"
+    depends on SERIN_THERMAL_CAL
+    default 30
+    range 0 120
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_RING_RECS
+    int "PSRAM ring depth (records of 32 bytes)"
+    depends on SERIN_THERMAL_CAL
+    default 4096
+    range 256 32768
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_WIFI_SSID
+    string "Wi-Fi SSID for the radio regimes"
+    depends on SERIN_THERMAL_CAL
+    default ""
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_WIFI_PSK
+    string "Wi-Fi password for the radio regimes"
+    depends on SERIN_THERMAL_CAL
+    default ""
+    help
+        Thermal calibration build setting.
+
+config SERIN_CAL_LOAD_URL
+    string "URL fetched in a loop for the sustained-radio regime"
+    depends on SERIN_THERMAL_CAL
+    default "https://github.com/Serin-Labs/serin-link/releases/latest/download/manifest.json"
+    help
+        Thermal calibration build setting.
+
+endmenu
