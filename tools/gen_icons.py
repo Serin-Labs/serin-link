@@ -40,8 +40,8 @@ ICONS = [
     ("set_brightness", [45, 60]), ("set_units", [45, 60]), ("set_wifi", [45, 60]),
     ("set_homekit", [45, 60]), ("set_system_chip", [45, 60]), ("set_advanced", [45, 60]),
     ("set_lock", [26, 45, 60]), ("set_idle", [45, 60]), ("set_reset", [45, 60]),
-    ("set_night", [45, 60]), ("set_motion", [45, 60]),
-    ("set_bridge", [32, 45, 46, 60, 66, 86]),
+    ("set_night", [45, 60]), ("set_transitions", [45, 60]),
+    ("set_link_row", [32, 45, 46, 60, 66, 86]),
     ("digit_1", [46, 66]), ("digit_2", [46, 66]), ("digit_3", [46, 66]),
     ("digit_4", [46, 66]), ("digit_5", [46, 66]), ("digit_6", [46, 66]),
     ("digit_7", [46, 66]),
@@ -67,9 +67,9 @@ UPSCALE_OK = {
     ("set_brightness", 60), ("set_units", 60), ("set_wifi", 60),
     ("set_homekit", 60), ("set_system_chip", 60), ("set_advanced", 60),
     ("set_lock", 60), ("set_idle", 60), ("set_reset", 60),
-    ("set_night", 60), ("set_motion", 60),
+    ("set_night", 60), ("set_transitions", 60),
     ("set_night", 60),
-    ("set_bridge", 60), ("set_bridge", 66), ("set_bridge", 86),
+    ("set_link_row", 60), ("set_link_row", 66), ("set_link_row", 86),
 }
 
 def render_alpha(name, w, master):

@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 
+# The optional latest-version probe can evaluate dependency Kconfig conditions
+# before sdkconfig exists on a clean checkout (e.g. LV_USE_FREETYPE).
+# Keep normal builds on dependencies.lock; upgrade with `idf.py update-dependencies`.
+set(ENV{IDF_COMPONENT_CHECK_NEW_VERSION} "0")
+
 if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/secure_boot_signing_key.pem)
     message(WARNING "secure_boot_signing_key.pem missing — generating a fresh "
                     "OTA signing key (dials built from it accept only OTA "
@@ -12,4 +17,4 @@ if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/secure_boot_signing_key.pem)
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(serin_dial)
+project(serin_link)

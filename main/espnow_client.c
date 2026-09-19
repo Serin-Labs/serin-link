@@ -46,7 +46,7 @@
 
 static const char *TAG = "espnow_client";
 
-static bool     s_useF = true;
+static bool     s_use_f = true;
 static uint8_t  s_channel;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -101,23 +101,23 @@ static const ui_caps_t ZONE_CAPS_DEFAULT = {
 static zone_t s_z[ESPNOW_MAX_BONDS];
 static int          s_zn;
 static volatile int s_active;
-static volatile int s_zoneReq = -1;
+static volatile int s_zone_req = -1;
 
 static struct sl2_room_source_entry s_catalog[SL2_ROOM_CATALOG_MAX];
-static uint8_t  s_catalogCount;
-static uint32_t s_catalogRevision;
-static int      s_catalogZi = -1;
-static struct sl2_room_source_entry s_catalogStage[SL2_ROOM_CATALOG_MAX];
-static uint8_t  s_catalogStageCount;
-static uint32_t s_catalogStageRevision;
-static int      s_catalogStageZi = -1;
+static uint8_t  s_catalog_count;
+static uint32_t s_catalog_revision;
+static int      s_catalog_zi = -1;
+static struct sl2_room_source_entry s_catalog_stage[SL2_ROOM_CATALOG_MAX];
+static uint8_t  s_catalog_stage_count;
+static uint32_t s_catalog_stage_revision;
+static int      s_catalog_stage_zi = -1;
 
-static bool catalog_held(int zi) { return s_catalogZi == zi && s_catalogCount; }
+static bool catalog_held(int zi) { return s_catalog_zi == zi && s_catalog_count; }
 
 static void catalog_reset(void)
 {
-    s_catalogCount = 0; s_catalogRevision = 0; s_catalogZi = -1;
-    s_catalogStageCount = 0; s_catalogStageRevision = 0; s_catalogStageZi = -1;
+    s_catalog_count = 0; s_catalog_revision = 0; s_catalog_zi = -1;
+    s_catalog_stage_count = 0; s_catalog_stage_revision = 0; s_catalog_stage_zi = -1;
 }
 
 typedef char ui_zones_sa[(UI_MAX_ZONES == ESPNOW_MAX_BONDS) ? 1 : -1];
@@ -185,7 +185,7 @@ static void zones_init(void) {
         s_z[i].bond = recs[i];
         s_z[i].want_caps = true;
         s_z[i].caps = ZONE_CAPS_DEFAULT;
-        s_z[i].st.use_f = s_useF;
+        s_z[i].st.use_f = s_use_f;
     }
     int a = prefs_get_u8("activeZone", 0);
     s_active = (a >= 0 && a < s_zn) ? a : 0;
@@ -197,7 +197,7 @@ void espnow_client_refresh_idents(void) {
 }
 void espnow_client_set_active(int idx) {
     if (idx < 0 || idx >= s_zn || idx == s_active) return;
-    s_zoneReq = idx;
+    s_zone_req = idx;
 }
 
 static void stamp_first_probe(int i, uint32_t now) {
@@ -259,25 +259,25 @@ static void badge_paint_if_changed(uint32_t *sig) {
     push_zones_ui();
 }
 
-static hvac_state_t s_lastSent;
+static hvac_state_t s_last_sent;
 
-static edit_hold_t  s_setHold;
-static bool     s_setHoldUseF = false;
-static int      s_txSentTemp = -1000;
-static edit_hold2_t s_bandHold;
-static bool     s_bandHoldUseF = false;
-static int      s_txSentLo = -1000, s_txSentHi = -1000;
-static edit_hold_t  s_unitHold;
-static edit_hold_t  s_modeHold;
-static edit_hold_t  s_vvHold;
-static edit_hold_t  s_hvHold;
-static edit_hold_t  s_fanHold;
-static int      s_txSentFan = -1000;
+static edit_hold_t  s_set_hold;
+static bool     s_set_hold_use_f = false;
+static int      s_tx_sent_temp = -1000;
+static edit_hold2_t s_band_hold;
+static bool     s_band_hold_use_f = false;
+static int      s_tx_sent_lo = -1000, s_tx_sent_hi = -1000;
+static edit_hold_t  s_unit_hold;
+static edit_hold_t  s_mode_hold;
+static edit_hold_t  s_vv_hold;
+static edit_hold_t  s_hv_hold;
+static edit_hold_t  s_fan_hold;
+static int      s_tx_sent_fan = -1000;
 #define SET_HOLD_MS 3000
 #define EDIT_DEBOUNCE_MS 1000
 #define FAN_DEBOUNCE_MS 300
 #define SYNC_WAIT_MS 12000
-static uint32_t s_syncStartMs;
+static uint32_t s_sync_start_ms;
 
 static void sweep_backoff_reset(void);
 static bool ensure_radio(void);
@@ -296,7 +296,7 @@ static volatile bool s_pair_busy = false;
 
 static uint8_t  s_pair_mac[6];
 static volatile bool s_pair_confirm = false;
-static volatile uint32_t s_pairStateMs = 0;
+static volatile uint32_t s_pair_state_ms = 0;
 
 static volatile bool s_ota_hold = false;
 static void radio_ps_apply(void);
@@ -306,15 +306,15 @@ static volatile bool s_wifi_resp_have = false;
 static volatile bool s_wifi_req_pending = false;
 static struct sl2_wifi_resp_pkt s_wifi_resp;
 
-static void ui_alert(hvac_alert_t a) {
+static void alert_set(hvac_alert_t a) {
     hvac_state_t s; ui_get_state(&s); s.alert = a; ui_set_state(&s);
 }
 
 #define TX_ACK_MS 100
-static SemaphoreHandle_t s_txMux;
-static SemaphoreHandle_t s_txDone;
-static volatile bool     s_txOk;
-static int               s_txOwed;
+static SemaphoreHandle_t s_tx_mux;
+static SemaphoreHandle_t s_tx_done;
+static volatile bool     s_tx_ok;
+static int               s_tx_owed;
 
 typedef enum {
     LINK_TX_ACKED,
@@ -325,22 +325,22 @@ typedef enum {
 
 static link_tx_t link_send_ex(const uint8_t mac[6], const void *buf, size_t len,
                               const char *what) {
-    if (!s_txMux || !s_txDone) return LINK_TX_REFUSED;
-    xSemaphoreTake(s_txMux, portMAX_DELAY);
-    while (s_txOwed > 0) {
-        if (xSemaphoreTake(s_txDone, pdMS_TO_TICKS(TX_ACK_MS)) != pdTRUE)
+    if (!s_tx_mux || !s_tx_done) return LINK_TX_REFUSED;
+    xSemaphoreTake(s_tx_mux, portMAX_DELAY);
+    while (s_tx_owed > 0) {
+        if (xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(TX_ACK_MS)) != pdTRUE)
             break;
-        s_txOwed--;
+        s_tx_owed--;
     }
-    xSemaphoreTake(s_txDone, 0);
-    s_txOk = false;
+    xSemaphoreTake(s_tx_done, 0);
+    s_tx_ok = false;
     esp_err_t e = esp_now_send(mac, (const uint8_t *)buf, len);
     bool acked = false;
     if (e == ESP_OK) {
-        if (xSemaphoreTake(s_txDone, pdMS_TO_TICKS(TX_ACK_MS)) == pdTRUE) acked = s_txOk;
-        else s_txOwed++;
+        if (xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(TX_ACK_MS)) == pdTRUE) acked = s_tx_ok;
+        else s_tx_owed++;
     }
-    xSemaphoreGive(s_txMux);
+    xSemaphoreGive(s_tx_mux);
     if (e != ESP_OK) {
         static uint32_t lastWarn;
         uint32_t now = now_ms();
@@ -387,10 +387,10 @@ static void cmd_tx(int zi, const struct sl2_cmd_pkt *cin) {
              c.mask);
 }
 
-static volatile uint8_t s_radioCh;
+static volatile uint8_t s_radio_ch;
 static bool radio_set_channel(uint8_t ch) {
     if (esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) != ESP_OK) return false;
-    s_radioCh = ch;
+    s_radio_ch = ch;
     return true;
 }
 
@@ -414,9 +414,9 @@ static void note_delivery(int i, uint8_t ch) {
 static void on_send(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
     const bool ok = (status == ESP_NOW_SEND_SUCCESS);
     const int  i  = ok ? zone_by_mac(tx_info->des_addr) : -1;
-    if (i >= 0) note_delivery(i, s_radioCh);
-    s_txOk = ok;
-    if (s_txDone) xSemaphoreGive(s_txDone);
+    if (i >= 0) note_delivery(i, s_radio_ch);
+    s_tx_ok = ok;
+    if (s_tx_done) xSemaphoreGive(s_tx_done);
 }
 
 static void vane_range_check(int zi, const struct sl2_state_pkt *p) {
@@ -434,21 +434,21 @@ static void vane_range_check(int zi, const struct sl2_state_pkt *p) {
 
 static void resend_held_edits(int zi);
 
-static ui_screen_gate_t s_gateApplied = UI_SCREEN_GATE_NONE;
+static ui_screen_gate_t s_gate_applied = UI_SCREEN_GATE_NONE;
 static void screen_gate_sync(void) {
     ui_screen_gate_t g = UI_SCREEN_GATE_NONE;
     for (int i = 0; i < s_zn; i++)
         if (zone_online(i))
             g = sl2_screen_gate_merge(g, (ui_screen_gate_t)s_z[i].gate);
-    if (g == s_gateApplied) return;
+    if (g == s_gate_applied) return;
     if (!lvgl_port_lock(0)) return;
-    s_gateApplied = g;
+    s_gate_applied = g;
     ui_set_screen_gate(g);
     lvgl_port_unlock();
 }
 
-static bool    s_nightApplied     = false;
-static uint8_t s_nightCeilApplied = 0;
+static bool    s_night_applied      = false;
+static uint8_t s_night_ceil_applied = 0;
 static void night_sync(void) {
     bool n = false;
     uint8_t ceil = 0;
@@ -458,10 +458,10 @@ static void night_sync(void) {
         uint8_t c = s_z[i].nightCeil;
         if (c && (!ceil || c < ceil)) ceil = c;
     }
-    if (n == s_nightApplied && ceil == s_nightCeilApplied) return;
+    if (n == s_night_applied && ceil == s_night_ceil_applied) return;
     if (!lvgl_port_lock(0)) return;
-    s_nightApplied     = n;
-    s_nightCeilApplied = ceil;
+    s_night_applied      = n;
+    s_night_ceil_applied = ceil;
     ui_set_night(n, ceil);
     lvgl_port_unlock();
 }
@@ -488,19 +488,19 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     bool is_active = (zi == s_active);
     uint32_t now = now_ms();
     if (is_active)
-        use_f = edit_hold_echo(&s_unitHold, use_f ? 1 : 0, now, SET_HOLD_MS) != 0;
+        use_f = edit_hold_echo(&s_unit_hold, use_f ? 1 : 0, now, SET_HOLD_MS) != 0;
     hvac_state_t s;
     if (is_active) ui_get_state(&s); else s = z->st;
     s.mode       = mode_from_sl2(p->mode);
     if (is_active)
-        s.mode = (hvac_mode_t)edit_hold_echo(&s_modeHold, (int)s.mode, now, SET_HOLD_MS);
+        s.mode = (hvac_mode_t)edit_hold_echo(&s_mode_hold, (int)s.mode, now, SET_HOLD_MS);
     s.status     = (s.mode == MODE_OFF) ? ST_OFF
                  : (action_active(p->action) ? ST_ACTIVE : ST_IDLE);
     s.room_temp  = sl2_dc_to_display(p->room_dc, use_f, z->caps.ftab_id);
     if (p->set_dc != SL2_DC_NA) {
         int set_echo = ui_dd_from_dc(p->set_dc, use_f, z->caps.ftab_id);
         if (is_active)
-            set_echo = edit_hold_echo(&s_setHold, set_echo, now, SET_HOLD_MS);
+            set_echo = edit_hold_echo(&s_set_hold, set_echo, now, SET_HOLD_MS);
         s.set_dd = set_echo;
     }
     s.band_valid = (p->set_low_dc != SL2_DC_NA && p->set_high_dc != SL2_DC_NA);
@@ -508,16 +508,16 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
         int lo = ui_dd_from_dc(p->set_low_dc,  use_f, z->caps.ftab_id);
         int hi = ui_dd_from_dc(p->set_high_dc, use_f, z->caps.ftab_id);
         if (is_active)
-            edit_hold2_echo(&s_bandHold, &lo, &hi, now, SET_HOLD_MS);
+            edit_hold2_echo(&s_band_hold, &lo, &hi, now, SET_HOLD_MS);
         s.set_lo_dd = lo; s.set_hi_dd = hi;
     }
     s.fan_pct    = p->fan > 100 ? 100 : p->fan;
     s.vvane      = vvane_from_sl2(p->vane_v);
     s.hvane      = hvane_from_sl2(p->vane_h, z->caps.vane_h);
     if (is_active) {
-        s.fan_pct = edit_hold_echo(&s_fanHold, s.fan_pct, now, SET_HOLD_MS);
-        s.vvane   = (vvane_t)edit_hold_echo(&s_vvHold, (int)s.vvane, now, SET_HOLD_MS);
-        s.hvane   = (hvane_t)edit_hold_echo(&s_hvHold, (int)s.hvane, now, SET_HOLD_MS);
+        s.fan_pct = edit_hold_echo(&s_fan_hold, s.fan_pct, now, SET_HOLD_MS);
+        s.vvane   = (vvane_t)edit_hold_echo(&s_vv_hold, (int)s.vvane, now, SET_HOLD_MS);
+        s.hvane   = (hvane_t)edit_hold_echo(&s_hv_hold, (int)s.hvane, now, SET_HOLD_MS);
     }
     s.use_f      = use_f;
     s.humidity_valid = (p->room_hum_pct != SL2_HUM_NA);
@@ -533,10 +533,10 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     s.sub_mode = action_substate_str(p->action);
     z->st = s; z->synced = true;
     if (is_active) {
-        s_useF = use_f;
+        s_use_f = use_f;
         ui_set_state(&s);
-        s_lastSent = s;
-        ui_set_bridge_link(true, espnow_client_online(), z->bond.mac, z->rssi);
+        s_last_sent = s;
+        ui_set_link_state(true, espnow_client_online(), z->bond.mac, z->rssi);
     }
     lvgl_port_unlock();
     screen_gate_sync();
@@ -548,16 +548,16 @@ static void room_catalog_req(int zi, uint16_t cursor, uint32_t known_rev) {
     struct sl2_room_catalog_req_pkt q = { SL2_PKT_ROOM_CATALOG_REQ,
                                           SL2_PROTO_VERSION, cursor, known_rev };
     if (cursor == 0) {
-        s_catalogStageCount = 0;
-        s_catalogStageRevision = 0;
-        s_catalogStageZi = zi;
+        s_catalog_stage_count = 0;
+        s_catalog_stage_revision = 0;
+        s_catalog_stage_zi = zi;
     }
     link_send(s_z[zi].bond.mac, &q, sizeof q, "ROOM_CATALOG_REQ");
 }
 
 static const char *room_source_name(int zi) {
     if (!catalog_held(zi)) return NULL;
-    for (int i = 0; i < s_catalogCount; i++)
+    for (int i = 0; i < s_catalog_count; i++)
         if (s_catalog[i].id == s_z[zi].roomSourceId)
             return s_catalog[i].name;
     return NULL;
@@ -614,7 +614,7 @@ static void apply_info_tlvs(int zi, const uint8_t *tlvs, size_t len) {
             struct sl2_room_source_v2 v; memcpy(&v, rv, sizeof v);
             z->roomSourceId = v.source_id; z->roomSourceStatus = v.status;
             if ((z->caps.features & SL2_FEAT_ROOM_CATALOG) && zi == s_active &&
-                (!catalog_held(zi) || s_catalogRevision != v.revision))
+                (!catalog_held(zi) || s_catalog_revision != v.revision))
                 want_catalog = true;
         }
     }
@@ -623,7 +623,7 @@ static void apply_info_tlvs(int zi, const uint8_t *tlvs, size_t len) {
     z->st = s;
     if (is_active) {
         ui_set_state(&s);
-        ui_set_bridge_link(true, espnow_client_online(), z->bond.mac, z->rssi);
+        ui_set_link_state(true, espnow_client_online(), z->bond.mac, z->rssi);
         ui_set_room_src(s.room_src, s.room_src_status);
         ui_set_room_source_id(z->roomSourceId, z->roomSourceStatus);
     }
@@ -642,7 +642,7 @@ typedef struct {
 } evt_t;
 #define EV_Q_DEPTH 8
 static QueueHandle_t s_evq;
-static volatile uint32_t s_rxDrop;
+static volatile uint32_t s_rx_drop;
 
 static void handle_evt(evt_t *it) {
     if (it->kind == EV_WAKE) { s_wake_queued = false; s_wake_due = true; return; }
@@ -689,31 +689,31 @@ static void handle_evt(evt_t *it) {
         size_t need = SL2_ROOM_CATALOG_RESP_HDR_LEN +
                       (size_t)p.count * sizeof(struct sl2_room_source_entry);
         if (p.count > SL2_ROOM_CATALOG_PAGE_MAX || need > (size_t)len ||
-            s_catalogStageZi != it->zi ||
-            (s_catalogStageCount && p.revision != s_catalogStageRevision)) {
-            s_catalogStageCount = 0;
-            s_catalogStageRevision = 0;
+            s_catalog_stage_zi != it->zi ||
+            (s_catalog_stage_count && p.revision != s_catalog_stage_revision)) {
+            s_catalog_stage_count = 0;
+            s_catalog_stage_revision = 0;
             break;
         }
-        if (!s_catalogStageCount) s_catalogStageRevision = p.revision;
-        uint8_t room = (uint8_t)(SL2_ROOM_CATALOG_MAX - s_catalogStageCount);
+        if (!s_catalog_stage_count) s_catalog_stage_revision = p.revision;
+        uint8_t room = (uint8_t)(SL2_ROOM_CATALOG_MAX - s_catalog_stage_count);
         uint8_t take = p.count < room ? p.count : room;
-        memcpy(s_catalogStage + s_catalogStageCount,
+        memcpy(s_catalog_stage + s_catalog_stage_count,
                data + SL2_ROOM_CATALOG_RESP_HDR_LEN,
-               take * sizeof s_catalogStage[0]);
-        s_catalogStageCount += take;
+               take * sizeof s_catalog_stage[0]);
+        s_catalog_stage_count += take;
         if (p.next_cursor != SL2_ROOM_CATALOG_DONE) {
             room_catalog_req(it->zi, p.next_cursor, p.revision);
         } else {
-            memcpy(s_catalog, s_catalogStage,
-                   s_catalogStageCount * sizeof s_catalog[0]);
-            s_catalogCount = s_catalogStageCount;
-            s_catalogRevision = s_catalogStageRevision;
-            s_catalogZi = it->zi;
-            s_catalogStageCount = 0;
-            s_catalogStageZi = -1;
+            memcpy(s_catalog, s_catalog_stage,
+                   s_catalog_stage_count * sizeof s_catalog[0]);
+            s_catalog_count = s_catalog_stage_count;
+            s_catalog_revision = s_catalog_stage_revision;
+            s_catalog_zi = it->zi;
+            s_catalog_stage_count = 0;
+            s_catalog_stage_zi = -1;
             if (it->zi == s_active && lvgl_port_lock(0)) {
-                ui_set_room_sources(s_catalog, s_catalogCount,
+                ui_set_room_sources(s_catalog, s_catalog_count,
                                     z->roomSourceId, z->roomSourceStatus);
                 ui_set_room_src_name(room_source_name(it->zi));
                 lvgl_port_unlock();
@@ -726,8 +726,8 @@ static void handle_evt(evt_t *it) {
         sl2_decode_pkt(&a, sizeof a, data, len);
         zone_t *z = &s_z[it->zi];
         z->roomSourceId = a.source_id; z->roomSourceStatus = a.status;
-        if (a.result == SL2_ROOM_SET_STALE_CATALOG && s_catalogZi == it->zi)
-            s_catalogRevision = 0;
+        if (a.result == SL2_ROOM_SET_STALE_CATALOG && s_catalog_zi == it->zi)
+            s_catalog_revision = 0;
         break;
     }
     default:
@@ -781,7 +781,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
         return;
     }
     if (s_pair_confirm && memcmp(info->src_addr, s_pair_mac, 6) == 0 &&
-        data[0] == SL2_PKT_STATE) { s_pairStateMs = ms_stamp(now_ms()); return; }
+        data[0] == SL2_PKT_STATE) { s_pair_state_ms = ms_stamp(now_ms()); return; }
 
     int zi = zone_by_mac(info->src_addr);
     if (zi < 0) return;
@@ -814,7 +814,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     it.zi   = (uint8_t)zi;
     it.len  = (uint8_t)len;
     memcpy(it.data, data, (size_t)len);
-    if (!s_evq || xQueueSend(s_evq, &it, 0) != pdTRUE) { s_rxDrop++; return; }
+    if (!s_evq || xQueueSend(s_evq, &it, 0) != pdTRUE) { s_rx_drop++; return; }
     z->lastRxMs = ms_stamp(now_ms());
 }
 
@@ -825,19 +825,19 @@ static bool probe_channel(const uint8_t mac[6], uint8_t ch) {
 }
 
 static bool     s_sweeping;
-static int      s_sweepStep;
-static uint32_t s_sweepRestMs;
-static volatile uint8_t s_sweepFails;
+static int      s_sweep_step;
+static uint32_t s_sweep_rest_ms;
+static volatile uint8_t s_sweep_fails;
 
-static void sweep_backoff_reset(void) { s_sweepFails = 0; }
+static void sweep_backoff_reset(void) { s_sweep_fails = 0; }
 #define SWEEP_STEP_GAP_MS  10
 
 static void sweep_begin(void) {
     s_sweeping = true;
-    s_sweepStep = 0;
-    s_sweepRestMs = 0;
+    s_sweep_step = 0;
+    s_sweep_rest_ms = 0;
 }
-static bool sweep_hunting(void) { return s_sweeping && !s_sweepRestMs; }
+static bool sweep_hunting(void) { return s_sweeping && !s_sweep_rest_ms; }
 
 static void sweep_end(void) {
     if (sweep_hunting()) radio_go_home();
@@ -847,9 +847,9 @@ static void sweep_end(void) {
 
 static bool sweep_pass_due(uint32_t now) {
     if (!s_sweeping) return false;
-    if (!s_sweepRestMs) return true;
-    if ((uint32_t)(now - s_sweepRestMs) < espnow_relock_rest_ms(s_sweepFails)) return false;
-    s_sweepRestMs = 0;
+    if (!s_sweep_rest_ms) return true;
+    if ((uint32_t)(now - s_sweep_rest_ms) < espnow_relock_rest_ms(s_sweep_fails)) return false;
+    s_sweep_rest_ms = 0;
     return true;
 }
 
@@ -858,18 +858,18 @@ typedef enum { SWEEP_MISS, SWEEP_LOCKED, SWEEP_ROUND_END } sweep_step_t;
 static sweep_step_t sweep_probe_once(uint32_t now) {
     zone_t *z = &s_z[s_active];
     const uint8_t remembered = z->bond.last_channel;
-    uint8_t ch = espnow_relock_channel(s_sweepStep, remembered);
+    uint8_t ch = espnow_relock_channel(s_sweep_step, remembered);
     if (!ch) {
-        s_sweepStep = 0;
-        s_sweepRestMs = ms_stamp(now);
-        if (s_sweepFails < UINT8_MAX) s_sweepFails++;
+        s_sweep_step = 0;
+        s_sweep_rest_ms = ms_stamp(now);
+        if (s_sweep_fails < UINT8_MAX) s_sweep_fails++;
         radio_go_home();
         ESP_LOGI(TAG, "zone %d band walked, nothing home (round %u) — resting %lu ms",
-                 s_active, (unsigned)s_sweepFails,
-                 (unsigned long)espnow_relock_rest_ms(s_sweepFails));
+                 s_active, (unsigned)s_sweep_fails,
+                 (unsigned long)espnow_relock_rest_ms(s_sweep_fails));
         return SWEEP_ROUND_END;
     }
-    s_sweepStep++;
+    s_sweep_step++;
     if (!probe_channel(z->bond.mac, ch)) return SWEEP_MISS;
     if (!zone_online(s_active)) {
         probe_channel(z->bond.mac, ch);
@@ -878,7 +878,7 @@ static sweep_step_t sweep_probe_once(uint32_t now) {
     s_channel = ch;
     s_sweeping = false;
     ESP_LOGI(TAG, "zone %d locked ch %u (%s, step %d)", s_active, ch,
-             ch == remembered ? "remembered" : "scan", s_sweepStep);
+             ch == remembered ? "remembered" : "scan", s_sweep_step);
     return SWEEP_LOCKED;
 }
 
@@ -901,9 +901,9 @@ static bool probe_tx(int zi, uint8_t want, uint32_t now, const char *tag) {
     struct sl2_probe_pkt pr = { SL2_PKT_PROBE, SL2_PROTO_VERSION, want, {0} };
     bool acked = link_send(s_z[zi].bond.mac, &pr, sizeof pr, tag);
     stamp_first_probe(zi, now);
-    if (!acked && s_radioCh &&
-        (s_radioCh == s_z[zi].bond.last_channel ||
-         (!s_z[zi].bond.last_channel && s_radioCh == s_channel)))
+    if (!acked && s_radio_ch &&
+        (s_radio_ch == s_z[zi].bond.last_channel ||
+         (!s_z[zi].bond.last_channel && s_radio_ch == s_channel)))
         zone_ch_miss(zi);
     return acked;
 }
@@ -919,35 +919,35 @@ static bool retune_adopt(uint8_t ch, const char *why) {
 
 static void cmd_put_temp(struct sl2_cmd_pkt *c, uint8_t ftab) {
     c->mask  |= SL2_CM_TEMP;
-    c->set_dc = ui_dd_to_dc(s_setHold.val, s_setHoldUseF, ftab);
+    c->set_dc = ui_dd_to_dc(s_set_hold.val, s_set_hold_use_f, ftab);
 }
 static void cmd_put_band(struct sl2_cmd_pkt *c, uint8_t ftab) {
     c->mask       |= SL2_CM_TEMP_BAND;
-    c->set_low_dc  = ui_dd_to_dc(s_bandHold.lo, s_bandHoldUseF, ftab);
-    c->set_high_dc = ui_dd_to_dc(s_bandHold.hi, s_bandHoldUseF, ftab);
+    c->set_low_dc  = ui_dd_to_dc(s_band_hold.lo, s_band_hold_use_f, ftab);
+    c->set_high_dc = ui_dd_to_dc(s_band_hold.hi, s_band_hold_use_f, ftab);
 }
 
 static bool edits_pending(void) {
-    return s_setHold.on || s_bandHold.on || s_fanHold.on;
+    return s_set_hold.on || s_band_hold.on || s_fan_hold.on;
 }
 
 static bool pending_edit_tx(struct sl2_cmd_pkt *txc, uint32_t now, bool flush) {
     const uint8_t ftab = s_z[s_active].caps.ftab_id;
     memset(txc, 0, sizeof *txc);
     txc->type = SL2_PKT_CMD; txc->version = SL2_PROTO_VERSION;
-    if (edit_hold_tx_due(&s_setHold, s_txSentTemp, now, EDIT_DEBOUNCE_MS, flush)) {
+    if (edit_hold_tx_due(&s_set_hold, s_tx_sent_temp, now, EDIT_DEBOUNCE_MS, flush)) {
         cmd_put_temp(txc, ftab);
-        s_txSentTemp = s_setHold.val;
+        s_tx_sent_temp = s_set_hold.val;
     }
-    if (edit_hold2_tx_due(&s_bandHold, s_txSentLo, s_txSentHi, now,
+    if (edit_hold2_tx_due(&s_band_hold, s_tx_sent_lo, s_tx_sent_hi, now,
                           EDIT_DEBOUNCE_MS, flush)) {
         cmd_put_band(txc, ftab);
-        s_txSentLo = s_bandHold.lo; s_txSentHi = s_bandHold.hi;
+        s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi;
     }
-    if (edit_hold_tx_due(&s_fanHold, s_txSentFan, now, FAN_DEBOUNCE_MS, flush)) {
+    if (edit_hold_tx_due(&s_fan_hold, s_tx_sent_fan, now, FAN_DEBOUNCE_MS, flush)) {
         txc->mask |= SL2_CM_FAN;
-        txc->fan   = (uint8_t)s_fanHold.val;
-        s_txSentFan = s_fanHold.val;
+        txc->fan   = (uint8_t)s_fan_hold.val;
+        s_tx_sent_fan = s_fan_hold.val;
     }
     return txc->mask != 0;
 }
@@ -958,17 +958,17 @@ static void resend_held_edits(int zi) {
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
     if (!lvgl_port_lock(0)) return;
     const uint8_t ftab = s_z[zi].caps.ftab_id;
-    if (s_modeHold.on) { c.mask |= SL2_CM_MODE;
-                         c.mode = mode_to_sl2((hvac_mode_t)s_modeHold.val); }
-    if (s_fanHold.on)  { c.mask |= SL2_CM_FAN;   c.fan = (uint8_t)s_fanHold.val; }
-    if (s_vvHold.on)   { c.mask |= SL2_CM_VANEV;
-                         c.vane_v = vvane_to_sl2((vvane_t)s_vvHold.val); }
-    if (s_hvHold.on)   { c.mask |= SL2_CM_VANEH;
-                         c.vane_h = hvane_to_sl2((hvane_t)s_hvHold.val,
+    if (s_mode_hold.on) { c.mask |= SL2_CM_MODE;
+                         c.mode = mode_to_sl2((hvac_mode_t)s_mode_hold.val); }
+    if (s_fan_hold.on)  { c.mask |= SL2_CM_FAN;   c.fan = (uint8_t)s_fan_hold.val; }
+    if (s_vv_hold.on)   { c.mask |= SL2_CM_VANEV;
+                         c.vane_v = vvane_to_sl2((vvane_t)s_vv_hold.val); }
+    if (s_hv_hold.on)   { c.mask |= SL2_CM_VANEH;
+                         c.vane_h = hvane_to_sl2((hvane_t)s_hv_hold.val,
                                                  s_z[zi].caps.vane_h); }
-    if (s_unitHold.on) { c.mask |= SL2_CM_UNITS; c.use_f = s_unitHold.val ? 1 : 0; }
-    if (s_setHold.on)  cmd_put_temp(&c, ftab);
-    if (s_bandHold.on) cmd_put_band(&c, ftab);
+    if (s_unit_hold.on) { c.mask |= SL2_CM_UNITS; c.use_f = s_unit_hold.val ? 1 : 0; }
+    if (s_set_hold.on)  cmd_put_temp(&c, ftab);
+    if (s_band_hold.on) cmd_put_band(&c, ftab);
     lvgl_port_unlock();
     if (!c.mask) return;
     ESP_LOGW(TAG, "zone %d replay epoch moved (unit rebooted) — re-asserting "
@@ -980,14 +980,14 @@ static void do_zone_switch(int ni) {
     struct sl2_cmd_pkt flushc; bool flush_due = false;
     if (lvgl_port_lock(0)) {
         flush_due = pending_edit_tx(&flushc, now_ms(), true);
-        edit_hold_drop(&s_setHold);  edit_hold_drop(&s_unitHold);
-        edit_hold_drop(&s_modeHold); edit_hold_drop(&s_fanHold);
-        edit_hold_drop(&s_vvHold);   edit_hold_drop(&s_hvHold);
-        edit_hold2_drop(&s_bandHold);
+        edit_hold_drop(&s_set_hold);  edit_hold_drop(&s_unit_hold);
+        edit_hold_drop(&s_mode_hold); edit_hold_drop(&s_fan_hold);
+        edit_hold_drop(&s_vv_hold);   edit_hold_drop(&s_hv_hold);
+        edit_hold2_drop(&s_band_hold);
         lvgl_port_unlock();
     }
     if (flush_due) cmd_tx(s_active, &flushc);
-    s_txSentTemp = -1000; s_txSentLo = s_txSentHi = -1000; s_txSentFan = -1000;
+    s_tx_sent_temp = -1000; s_tx_sent_lo = s_tx_sent_hi = -1000; s_tx_sent_fan = -1000;
     int oi = s_active;
     s_active = ni;
     prefs_set_u8("activeZone", (uint8_t)ni);
@@ -1007,8 +1007,8 @@ static void do_zone_switch(int ni) {
         if (lvgl_port_lock(0)) {
             ui_set_caps(&z->caps);
             ui_set_state(&z->st);
-            s_lastSent = z->st; s_useF = z->st.use_f;
-            ui_set_bridge_link(true, true, z->bond.mac, z->rssi);
+            s_last_sent = z->st; s_use_f = z->st.use_f;
+            ui_set_link_state(true, true, z->bond.mac, z->rssi);
             push_zones_ui_locked();
             lvgl_port_unlock();
         }
@@ -1021,21 +1021,21 @@ static void do_zone_switch(int ni) {
         if (hvac_state_plausible(&z->st)) {
             hvac_state_t st = z->st; st.alert = ALERT_SYNCING;
             ui_set_state(&st);
-            s_lastSent = z->st; s_useF = z->st.use_f;
+            s_last_sent = z->st; s_use_f = z->st.use_f;
         } else {
             hvac_state_t st;
             memset(&st, 0, sizeof st);
             st.alert = ALERT_SYNCING;
             ui_set_state(&st);
         }
-        ui_set_bridge_link(true, false, z->bond.mac, z->rssi);
+        ui_set_link_state(true, false, z->bond.mac, z->rssi);
         push_zones_ui_locked();
         lvgl_port_unlock();
     }
     z->synced = false;
     if (z->bond.last_channel && z->bond.last_channel != s_channel)
         retune_adopt(z->bond.last_channel, "zone switch");
-    s_syncStartMs = now_ms();
+    s_sync_start_ms = now_ms();
 }
 
 static void copy_cstr(char *dst, size_t dstsz, const char *src) {
@@ -1113,7 +1113,7 @@ static void link_task(void *arg) {
     s_link_task_up = true;
     esp_task_wdt_add(NULL);
     sweep_begin();
-    s_syncStartMs = now_ms();
+    s_sync_start_ms = now_ms();
     uint32_t lastProbe = 0;
     uint32_t stackLow = UINT32_MAX;
     uint32_t lastVerWarn = 0;
@@ -1125,10 +1125,20 @@ static void link_task(void *arg) {
     uint32_t lastHopMs = 0;
     uint32_t badgeSig = 0xFFFFFFFF;
     bool     wasHeld = false;
+    uint32_t heldOnline = 0;
     uint32_t lastRadioTry = 0;
     for (;;) {
         esp_task_wdt_reset();
-        if (s_pairing || s_ota_hold) { wasHeld = true; vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+        if (s_pairing || s_ota_hold) {
+            if (!wasHeld) {
+                wasHeld = true;
+                heldOnline = 0;
+                for (int i = 0; i < s_zn; i++)
+                    if (zone_online(i)) heldOnline |= 1u << i;
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
         if (!s_radio_up) {
             uint32_t t = now_ms();
             if (lastRadioTry == 0 || (uint32_t)(t - lastRadioTry) >= 5000) {
@@ -1136,9 +1146,9 @@ static void link_task(void *arg) {
                 if (ensure_radio()) {
                     ESP_LOGW(TAG, "radio recovered after boot failure");
                     sweep_begin();
-                    s_syncStartMs = now_ms();
+                    s_sync_start_ms = now_ms();
                 } else if (lvgl_port_lock(0)) {
-                    ui_alert(ALERT_NOLINK);
+                    alert_set(ALERT_NOLINK);
                     lvgl_port_unlock();
                 }
             }
@@ -1147,17 +1157,19 @@ static void link_task(void *arg) {
         }
         if (wasHeld) {
             wasHeld = false;
-            for (int i = 0; i < s_zn; i++)
+            for (int i = 0; i < s_zn; i++) {
                 if (s_z[i].synced) s_z[i].lastRxMs = ms_stamp(now_ms());
+                if (heldOnline & (1u << i)) s_z[i].lastAckMs = ms_stamp(now_ms());
+            }
             if (s_evq) xQueueReset(s_evq);
             radio_go_home();
             sweep_backoff_reset();
             if (s_sweeping) sweep_begin();
         }
         if (!sweep_hunting()) evt_pump(0);
-        int req = s_zoneReq;
+        int req = s_zone_req;
         if (req >= 0) {
-            s_zoneReq = -1;
+            s_zone_req = -1;
             if (req < s_zn && req != s_active) {
                 int prevActive = s_active;
                 sweep_end();
@@ -1173,10 +1185,10 @@ static void link_task(void *arg) {
             uint32_t shot = now_ms();
             sweep_step_t r = sweep_probe_once(now);
             if (r == SWEEP_LOCKED) {
-                s_syncStartMs = now_ms();
+                s_sync_start_ms = now_ms();
                 lastProbe = now_ms();
             } else if (r == SWEEP_ROUND_END) {
-                if (lvgl_port_lock(0)) { ui_alert(ALERT_NOLINK); lvgl_port_unlock(); }
+                if (lvgl_port_lock(0)) { alert_set(ALERT_NOLINK); lvgl_port_unlock(); }
             }
             uint32_t spent = now_ms() - shot;
             if (spent < SWEEP_STEP_GAP_MS)
@@ -1225,7 +1237,7 @@ static void link_task(void *arg) {
                 ui_set_link_sensor(sensor_sht40_present(), svalid, sdc, srh);
                 lvgl_port_unlock();
             }
-            uint32_t drops = s_rxDrop;
+            uint32_t drops = s_rx_drop;
             if (drops != dropSeen && (lastDropWarn == 0 || now - lastDropWarn >= 10000)) {
                 ESP_LOGW(TAG, "RX queue full — dropped %lu frame(s) (link_task starved)",
                          (unsigned long)(drops - dropSeen));
@@ -1291,7 +1303,7 @@ static void link_task(void *arg) {
             lvgl_port_unlock();
         }
         if (tx_due) cmd_tx(s_active, &txc);
-        bool stuck_sync = (!s_z[s_active].synced && (now - s_syncStartMs) > SYNC_WAIT_MS);
+        bool stuck_sync = (!s_z[s_active].synced && (now - s_sync_start_ms) > SYNC_WAIT_MS);
         bool rx_stale   = zone_rx_stale(s_active);
         if ((!espnow_client_online() || stuck_sync || rx_stale) && !s_sweeping) {
             bool lost = s_z[s_active].synced || stuck_sync;
@@ -1302,12 +1314,12 @@ static void link_task(void *arg) {
                          ? (unsigned long)(now_ms() - s_z[s_active].lastAckMs) : 0UL);
             if (rx_stale) s_z[s_active].synced = false;
             s_z[s_active].ackWin = ESPNOW_ACK_WIN_ACTIVE_MS;
-            if (lvgl_port_lock(0)) { if (lost) ui_alert(ALERT_NOLINK);
-                                     ui_set_bridge_link(true, false, s_z[s_active].bond.mac, s_z[s_active].rssi);
+            if (lvgl_port_lock(0)) { if (lost) alert_set(ALERT_NOLINK);
+                                     ui_set_link_state(true, false, s_z[s_active].bond.mac, s_z[s_active].rssi);
                                      push_zones_ui_locked();
                                      lvgl_port_unlock(); }
             if (!espnow_client_online()) sweep_begin();
-            s_syncStartMs = now_ms();
+            s_sync_start_ms = now_ms();
             lastProbe = now_ms();
         }
         evt_pump(200);
@@ -1318,37 +1330,37 @@ void espnow_client_on_local_edit(void) {
     sweep_backoff_reset();
     if (!edit_tx_allowed(s_zn, s_z[s_active].synced)) return;
     hvac_state_t s; ui_get_state(&s);
-    bool use_f = s_useF;
+    bool use_f = s_use_f;
     uint32_t now = now_ms();
 
-    if (s.set_dd != s_lastSent.set_dd) {
-        edit_hold_note(&s_setHold, s.set_dd, now);
-        s_setHoldUseF = use_f;
+    if (s.set_dd != s_last_sent.set_dd) {
+        edit_hold_note(&s_set_hold, s.set_dd, now);
+        s_set_hold_use_f = use_f;
     }
-    if (s.set_lo_dd != s_lastSent.set_lo_dd || s.set_hi_dd != s_lastSent.set_hi_dd) {
-        edit_hold2_note(&s_bandHold, s.set_lo_dd, s.set_hi_dd, now);
-        s_bandHoldUseF = use_f;
+    if (s.set_lo_dd != s_last_sent.set_lo_dd || s.set_hi_dd != s_last_sent.set_hi_dd) {
+        edit_hold2_note(&s_band_hold, s.set_lo_dd, s.set_hi_dd, now);
+        s_band_hold_use_f = use_f;
     }
 
     struct sl2_cmd_pkt c; memset(&c, 0, sizeof(c));
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
-    if (s.mode != s_lastSent.mode)   { c.mask |= SL2_CM_MODE;  c.mode = mode_to_sl2(s.mode);
-                                       edit_hold_note(&s_modeHold, (int)s.mode, now); }
-    if (s.fan_pct != s_lastSent.fan_pct) edit_hold_note(&s_fanHold, s.fan_pct, now);
-    if (s.vvane != s_lastSent.vvane) { c.mask |= SL2_CM_VANEV; c.vane_v = vvane_to_sl2(s.vvane);
-                                       edit_hold_note(&s_vvHold, (int)s.vvane, now); }
-    if (s.hvane != s_lastSent.hvane) { c.mask |= SL2_CM_VANEH;
+    if (s.mode != s_last_sent.mode)   { c.mask |= SL2_CM_MODE;  c.mode = mode_to_sl2(s.mode);
+                                       edit_hold_note(&s_mode_hold, (int)s.mode, now); }
+    if (s.fan_pct != s_last_sent.fan_pct) edit_hold_note(&s_fan_hold, s.fan_pct, now);
+    if (s.vvane != s_last_sent.vvane) { c.mask |= SL2_CM_VANEV; c.vane_v = vvane_to_sl2(s.vvane);
+                                       edit_hold_note(&s_vv_hold, (int)s.vvane, now); }
+    if (s.hvane != s_last_sent.hvane) { c.mask |= SL2_CM_VANEH;
                                        c.vane_h = hvane_to_sl2(s.hvane, s_z[s_active].caps.vane_h);
-                                       edit_hold_note(&s_hvHold, (int)s.hvane, now); }
+                                       edit_hold_note(&s_hv_hold, (int)s.hvane, now); }
     if (c.mask == 0) return;
     cmd_post(s_active, &c);
-    s_lastSent = s;
+    s_last_sent = s;
 }
 
 void espnow_client_on_units_edit(bool use_f) {
     if (!edit_tx_allowed(s_zn, s_z[s_active].synced)) return;
-    edit_hold_note(&s_unitHold, use_f ? 1 : 0, now_ms());
-    s_useF = use_f;
+    edit_hold_note(&s_unit_hold, use_f ? 1 : 0, now_ms());
+    s_use_f = use_f;
     s_z[s_active].st.use_f = use_f;
     struct sl2_cmd_pkt c; memset(&c, 0, sizeof(c));
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
@@ -1362,14 +1374,14 @@ void espnow_client_on_room_source_id(uint64_t source_id) {
     if (!(z->caps.features & SL2_FEAT_ROOM_CATALOG) || !catalog_held(s_active))
         return;
     bool found = false;
-    for (int i = 0; i < s_catalogCount; i++)
+    for (int i = 0; i < s_catalog_count; i++)
         if (s_catalog[i].id == source_id) { found = true; break; }
     if (!found) return;
     struct sl2_room_source_set_pkt p = {0};
     p.type = SL2_PKT_ROOM_SOURCE_SET;
     p.version = SL2_PROTO_VERSION;
     p.request_id = ++z->roomRequestId;
-    p.revision = s_catalogRevision;
+    p.revision = s_catalog_revision;
     p.source_id = source_id;
     evt_post(EV_TX, s_active, &p, sizeof p, "ROOM_SOURCE_SET");
 }
@@ -1416,10 +1428,10 @@ void espnow_client_wifi_setup(void)
     evt_post(EV_TX, s_active, &p, sizeof p, "WIFI_SETUP");
 }
 
-bool espnow_client_request_wifi(char *ssid, size_t ssid_len,
-                                char *psk, size_t psk_len, uint32_t timeout_ms)
+espnow_wifi_req_t espnow_client_request_wifi(char *ssid, size_t ssid_len,
+                                             char *psk, size_t psk_len, uint32_t timeout_ms)
 {
-    if (!s_zn) return false;
+    if (!s_zn) return ESPNOW_WIFI_REQ_NO_REPLY;
     s_wifi_resp_have = false;
     struct sl2_wifi_req_pkt rq;
     memset(&rq, 0, sizeof(rq));
@@ -1432,14 +1444,16 @@ bool espnow_client_request_wifi(char *ssid, size_t ssid_len,
             vTaskDelay(pdMS_TO_TICKS(20));
     }
     s_wifi_req_pending = false;
-    bool ok = s_wifi_resp_have && s_wifi_resp.ok;
-    if (ok) {
+    espnow_wifi_req_t res = !s_wifi_resp_have ? ESPNOW_WIFI_REQ_NO_REPLY
+                          : s_wifi_resp.ok    ? ESPNOW_WIFI_REQ_OK
+                                              : ESPNOW_WIFI_REQ_NO_CREDS;
+    if (res == ESPNOW_WIFI_REQ_OK) {
         snprintf(ssid, ssid_len, "%.*s", (int)sizeof s_wifi_resp.ssid, s_wifi_resp.ssid);
         snprintf(psk,  psk_len,  "%.*s", (int)sizeof s_wifi_resp.psk,  s_wifi_resp.psk);
     }
     memset((void *)&s_wifi_resp, 0, sizeof(s_wifi_resp));
     s_wifi_resp_have = false;
-    return ok;
+    return res;
 }
 
 static int hexval(char ch) {
@@ -1816,10 +1830,10 @@ static bool ensure_radio(void) {
         ESP_LOGE(TAG, "esp_now init failed: %s", esp_err_to_name(e));
         return false;
     }
-    if (!s_evq)    s_evq    = xQueueCreate(EV_Q_DEPTH, sizeof(evt_t));
-    if (!s_txMux)  s_txMux  = xSemaphoreCreateMutex();
-    if (!s_txDone) s_txDone = xSemaphoreCreateBinary();
-    if (!s_evq || !s_txMux || !s_txDone) {
+    if (!s_evq)     s_evq     = xQueueCreate(EV_Q_DEPTH, sizeof(evt_t));
+    if (!s_tx_mux)  s_tx_mux  = xSemaphoreCreateMutex();
+    if (!s_tx_done) s_tx_done = xSemaphoreCreateBinary();
+    if (!s_evq || !s_tx_mux || !s_tx_done) {
         ESP_LOGE(TAG, "link alloc failed (evq/txmux/txdone) — retrying");
         return false;
     }
@@ -1970,7 +1984,7 @@ have_valid_resp:
                unit_mac[0],unit_mac[1],unit_mac[2],unit_mac[3],unit_mac[4],unit_mac[5], cch); }
 
     memcpy(s_pair_mac, unit_mac, 6);
-    s_pairStateMs = 0;
+    s_pair_state_ms = 0;
     s_pair_confirm = true;
 
     struct sl2_probe_pkt pr = { SL2_PKT_PROBE, SL2_PROTO_VERSION, 0, {0} };
@@ -1985,12 +1999,12 @@ have_valid_resp:
         }
     }
     int acked = 0, sent = 0;
-    for (int i = 0; i < 20 && s_pairStateMs == 0 && !s_pair_cancel; i++) {
+    for (int i = 0; i < 20 && s_pair_state_ms == 0 && !s_pair_cancel; i++) {
         sent++;
         if (link_send(unit_mac, &pr, sizeof pr, "PROBE")) acked++;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (acked == 0 && s_pairStateMs == 0 && !s_pair_cancel) {
+    if (acked == 0 && s_pair_state_ms == 0 && !s_pair_cancel) {
         ESP_LOGW(TAG, "pair: no ACKs — hunting the controller's channel");
         for (uint8_t ch = 1; ch <= 13 && !s_pair_cancel; ch++) {
             if (esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) != ESP_OK)
@@ -2002,14 +2016,14 @@ have_valid_resp:
             if (acked) { ESP_LOGW(TAG, "pair: controller ACKed on ch %u", ch); break; }
         }
     }
-    for (int i = 0; i < 100 && s_pairStateMs == 0 && !s_pair_cancel; i++) {
+    for (int i = 0; i < 100 && s_pair_state_ms == 0 && !s_pair_cancel; i++) {
         sent++;
         if (link_send(unit_mac, &pr, sizeof pr, "PROBE")) acked++;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     ESP_LOGW(TAG, "pair: confirm probes sent=%d acked=%d", sent, acked);
     if (s_pair_cancel) goto cancelled;
-    if (s_pairStateMs != 0) {
+    if (s_pair_state_ms != 0) {
         s_pair_confirm = false;
         uint8_t ch = 0; wifi_second_chan_t c2; esp_wifi_get_channel(&ch, &c2);
         espnow_bond_rec_t rec; memset(&rec, 0, sizeof rec);
@@ -2119,8 +2133,8 @@ void espnow_client_forget(void) {
 void espnow_client_boot_ui(void) {
     zones_init();
     if (!s_zn) return;
-    ui_set_bridge_link(true, false, s_z[s_active].bond.mac, 0);
-    ui_alert(ALERT_SYNCING);
+    ui_set_link_state(true, false, s_z[s_active].bond.mac, 0);
+    alert_set(ALERT_SYNCING);
     push_zones_ui_locked();
 }
 
@@ -2148,7 +2162,7 @@ void espnow_client_start(void) {
         ESP_LOGE(TAG, "link task spawn FAILED (largest internal block %u) — "
                       "no ESP-NOW until reboot",
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-        if (lvgl_port_lock(0)) { ui_alert(ALERT_NOLINK); lvgl_port_unlock(); }
+        if (lvgl_port_lock(0)) { alert_set(ALERT_NOLINK); lvgl_port_unlock(); }
     }
 }
 

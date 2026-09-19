@@ -16,7 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "perf";
+static const char *TAG = "perf_stats";
 
 static int64_t  s_render_t0, s_flush_t0;
 static uint32_t s_renders, s_render_us, s_render_max;
@@ -161,10 +161,14 @@ static void dump_task(void *arg)
 
 void perf_stats_init(lv_display_t *disp)
 {
+    /* taskLVGL is already rendering by now and walks this same event list, so
+     * take the mutex rather than relying on the caller to hold it. */
+    ESP_ERROR_CHECK(lvgl_port_lock(0) ? ESP_OK : ESP_ERR_TIMEOUT);
     lv_display_add_event_cb(disp, disp_evt, LV_EVENT_RENDER_START, NULL);
     lv_display_add_event_cb(disp, disp_evt, LV_EVENT_RENDER_READY, NULL);
     lv_display_add_event_cb(disp, disp_evt, LV_EVENT_FLUSH_START, NULL);
     lv_display_add_event_cb(disp, disp_evt, LV_EVENT_FLUSH_FINISH, NULL);
+    lvgl_port_unlock();
     heap_line("post-display-init");
     xTaskCreate(dump_task, "perf_dump", 4096, NULL, 2, NULL);
     ESP_LOGI(TAG, "perf stats armed (5s window)");

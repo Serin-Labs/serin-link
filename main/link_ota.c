@@ -29,6 +29,7 @@
 #include "esp_console.h"
 #include "prefs.h"
 #include "ota_ver.h"
+#include "wifi_sta.h"
 
 static const char *TAG = "link_ota";
 
@@ -39,7 +40,6 @@ static const char *TAG = "link_ota";
 #endif
 
 #define CREDS_TIMEOUT_MS   5000
-#define JOIN_TIMEOUT_MS    20000
 #define SNTP_TIMEOUT_MS    2000
 #define CONFIRM_TIMEOUT_MS 60000
 #define MANIFEST_MAX       4096
@@ -49,9 +49,6 @@ static const char *TAG = "link_ota";
 static volatile bool s_running;
 static volatile bool s_cancel;
 static volatile bool s_confirm;
-
-static volatile bool s_got_ip;
-static volatile int  s_disc;
 
 #define VALID_SOAK_MS      30000
 #define VALID_POLL_MS      2000
@@ -106,35 +103,6 @@ void link_ota_init(void)
 static void ota_ui(ota_ui_t st, int pct, const char *txt)
 {
     if (lvgl_port_lock(0)) { ui_set_ota(st, pct, txt); lvgl_port_unlock(); }
-}
-
-static void wifi_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    (void)arg; (void)data;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (++s_disc <= 3 && !s_got_ip) esp_wifi_connect();
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        s_got_ip = true;
-    }
-}
-
-static bool wifi_join(const char *ssid, const char *psk)
-{
-    esp_event_handler_instance_t h1 = NULL, h2 = NULL;
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_evt, NULL, &h1);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_evt, NULL, &h2);
-    s_got_ip = false; s_disc = 0;
-    wifi_config_t wc; memset(&wc, 0, sizeof(wc));
-    snprintf((char *)wc.sta.ssid, sizeof(wc.sta.ssid), "%s", ssid);
-    snprintf((char *)wc.sta.password, sizeof(wc.sta.password), "%s", psk);
-    esp_wifi_set_config(WIFI_IF_STA, &wc);
-    esp_wifi_connect();
-    for (int i = 0; i < JOIN_TIMEOUT_MS / 100 && !s_got_ip && !s_cancel; i++)
-        vTaskDelay(pdMS_TO_TICKS(100));
-    esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, h1);
-    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, h2);
-    if (!s_got_ip) esp_wifi_disconnect();
-    return s_got_ip;
 }
 
 #define OTA_BETA_PREF  "ota_beta"
@@ -352,15 +320,17 @@ static void ota_task(void *arg)
 
     ota_ui(OTA_UI_CHECKING, 0, NULL);
 
-    if (!espnow_client_request_wifi(ssid, sizeof(ssid), psk, sizeof(psk), CREDS_TIMEOUT_MS)) {
-        fail = "Unit unreachable";
+    espnow_wifi_req_t creds = espnow_client_request_wifi(ssid, sizeof(ssid), psk, sizeof(psk),
+                                                         CREDS_TIMEOUT_MS);
+    if (creds != ESPNOW_WIFI_REQ_OK) {
+        fail = creds == ESPNOW_WIFI_REQ_NO_CREDS ? "Unit has no WiFi" : "Unit unreachable";
         goto done;
     }
     if (s_cancel) goto done;
 
     espnow_client_ota_pause(true);
     espnow_paused = true;
-    if (!wifi_join(ssid, psk)) {
+    if (!wifi_sta_join(ssid, psk, &s_cancel)) {
         if (!s_cancel) fail = "WiFi failed";
         goto done;
     }

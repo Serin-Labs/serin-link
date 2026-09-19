@@ -21,6 +21,7 @@ void          bsp_register_console(void);
 
 #if CONFIG_SERIN_BOARD_VIEWE_15
 void          bsp_display_deep_off(bool off);
+void          bsp_backlight_scale(uint8_t scale);
 #endif
 
 void bsp_input_start(void (*on_encoder)(int delta), void (*on_button)(void),

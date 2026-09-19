@@ -32,6 +32,7 @@ static struct {
     bool saw_unpaired;
     bool change;
     bool from_settings;
+    bool home_entry;
     uint8_t wait_s;
     uint16_t qr_s;
 } WZ;
@@ -56,6 +57,32 @@ static void wifi_ip_qr_entry(void);
 void refresh_wifi(void);
 static void wifi_tick_cb(lv_timer_t *t);
 
+static bool home_pairing_supported(void)
+{
+    return (s_caps.features & SL2_FEAT_HOMEKIT) != 0;
+}
+
+static bool wifi_offer_pairing(void)
+{
+    return !WZ.change && home_pairing_supported() && s_state.hk_paired <= 0;
+}
+
+static void wifi_finish(void)
+{
+    if (WZ.from_settings) settings_land(SET_WIFI);
+    else                  ui_show_screen(SCREEN_THERMOSTAT);
+}
+
+static void wifi_complete(void)
+{
+    if (!wifi_offer_pairing()) { wifi_finish(); return; }
+    WZ.st = WZ_HK;
+    WZ.wait_s = 0;
+    WZ.qr_s = 0;
+    WZ.saw_unpaired = true;
+    wifi_wizard_render();
+}
+
 static void wifi_tick_arm(void)
 {
     if (!WZ.tick) WZ.tick = lv_timer_create(wifi_tick_cb, 1000, NULL);
@@ -63,19 +90,21 @@ static void wifi_tick_arm(void)
 
 void wifi_setup_entry(void)
 {
-    if (s_bridge.online && s_state.wifi_connected && s_state.wifi_ip[0]) { wifi_ip_qr_entry(); return; }
-    if (!s_bridge.online || !s_state.wifi_setup_avail) {
+    if (s_link.online && s_state.wifi_connected && s_state.wifi_ip[0]) { wifi_ip_qr_entry(); return; }
+    if (!s_link.online || !s_state.wifi_setup_avail) {
         settings_chip_dialog(SET_WIFI);
         return;
     }
     if (s_state.wifi_provisioned && s_state.wifi_connected) return;
     bool can_setup = (s_caps.features & SL2_FEAT_WIFI_SETUP) != 0;
+    bool from_settings = s_cur == SCREEN_SETTINGS;
     ui_show_screen(SCREEN_WIFI);
     WZ.saw_offline = true;
     WZ.saw_ap = s_state.wifi_setup_ap;
     WZ.saw_unpaired = false;
     WZ.change = false;
-    WZ.from_settings = false;
+    WZ.from_settings = from_settings;
+    WZ.home_entry = false;
     WZ.wait_s = 0;
     WZ.qr_s = 0;
     if (can_setup && !s_state.wifi_setup_ap) { notify_wifi_setup(); WZ.st = WZ_STARTING; }
@@ -91,7 +120,8 @@ void wifi_change_begin(void)
     WZ.saw_ap = s_state.wifi_setup_ap;
     WZ.saw_unpaired = false;
     WZ.change = true;
-    WZ.from_settings = false;
+    WZ.from_settings = true;
+    WZ.home_entry = false;
     WZ.wait_s = 0;
     WZ.qr_s = 0;
     notify_wifi_setup();
@@ -110,12 +140,8 @@ static void wifi_tick_cb(lv_timer_t *t)
         if (WZ.wait_s == WZ_START_TIMEOUT_S)
             wifi_wizard_render();
     }
-    if (WZ.st == WZ_DONE && !WZ.change && ++WZ.wait_s >= 3) {
-        WZ.st = WZ_HK;
-        WZ.wait_s = 0;
-        WZ.qr_s = 0;
-        WZ.saw_unpaired = (s_state.hk_paired <= 0);
-        wifi_wizard_render();
+    if (WZ.st == WZ_DONE && wifi_offer_pairing() && ++WZ.wait_s >= 3) {
+        wifi_complete();
         return;
     }
     if (WZ.st == WZ_JOINQR && WZ.change && ++WZ.qr_s >= WZ_CHANGE_QR_TIMEOUT_S) {
@@ -123,7 +149,7 @@ static void wifi_tick_cb(lv_timer_t *t)
         return;
     }
     if (((WZ.st == WZ_JOINQR && !WZ.change) || WZ.st == WZ_QR || WZ.st == WZ_HK ||
-         WZ.st == WZ_PAIRED || WZ.st == WZ_IPQR || (WZ.st == WZ_DONE && WZ.change)) &&
+         WZ.st == WZ_PAIRED || WZ.st == WZ_IPQR || (WZ.st == WZ_DONE && !wifi_offer_pairing())) &&
         ++WZ.qr_s >= WZ_IDLE_QR_TIMEOUT_S) {
         ui_show_screen(SCREEN_THERMOSTAT);
         return;
@@ -143,7 +169,7 @@ static const char *hk_face_name(void)
 {
     switch (hk_protocol()) {
     case HK_PROTO_MATTER:  return "Matter";
-    case HK_PROTO_HOMEKIT: return "Apple Home";
+    case HK_PROTO_HOMEKIT: return "HomeKit";
     default:               return "Home";
     }
 }
@@ -170,7 +196,7 @@ static void wifi_wizard_render(void)
 
     switch (WZ.st) {
     case WZ_STARTING:
-        lv_label_set_text(WZ.title, "Set up WiFi");
+        lv_label_set_text(WZ.title, "Set up Wi-Fi");
         lv_obj_align(WZ.title, LV_ALIGN_CENTER, 0, SERIN_PX(14));
         wz_icon(&hero_hotspot, 80, 78, SET_COL[SET_WIFI]);
         if (WZ.wait_s >= WZ_START_TIMEOUT_S) {
@@ -188,11 +214,11 @@ static void wifi_wizard_render(void)
     case WZ_JOINQR: {
         char ssid[16];
         snprintf(ssid, sizeof(ssid), "%s-%02X%02X",
-                 SERIN_AP_PREFIX, s_bridge.mac[4], s_bridge.mac[5]);
+                 SERIN_AP_PREFIX, s_link.mac[4], s_link.mac[5]);
         char join[96];
         snprintf(join, sizeof(join), "WIFI:S:%s;T:WPA;P:%s;;",
                  ssid, SERIN_AP_PASSWORD);
-        lv_label_set_text(WZ.title, "Set up WiFi");
+        lv_label_set_text(WZ.title, "Set up Wi-Fi");
         lv_obj_align(WZ.title, LV_ALIGN_TOP_MID, 0, SERIN_PX(QR_TITLE_Y));
         lv_qrcode_update(WZ.qr, join, (uint32_t)strlen(join));
         lv_obj_remove_flag(lv_obj_get_parent(WZ.qr), LV_OBJ_FLAG_HIDDEN);
@@ -200,7 +226,7 @@ static void wifi_wizard_render(void)
         lv_obj_set_style_text_font(WZ.code, FONT_UNITS, 0);
         lv_obj_align(WZ.code, LV_ALIGN_BOTTOM_MID, 0, -SERIN_PX(96));
         lv_obj_remove_flag(WZ.code, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(WZ.instr, "Scan to set up WiFi");
+        lv_label_set_text(WZ.instr, "Scan to set up Wi-Fi");
         lv_obj_remove_flag(WZ.instr, LV_OBJ_FLAG_HIDDEN);
         if (WZ.change) {
             lv_obj_align(WZ.hint, LV_ALIGN_BOTTOM_MID, 0, -SERIN_PX(28));
@@ -211,7 +237,7 @@ static void wifi_wizard_render(void)
         break;
     }
     case WZ_DONE:
-        lv_label_set_text(WZ.title, "WiFi connected");
+        lv_label_set_text(WZ.title, "Wi-Fi connected");
         lv_obj_set_style_text_color(WZ.title, lv_color_hex(COL_GREEN), 0);
         lv_obj_align(WZ.title, LV_ALIGN_CENTER, 0, SERIN_PX(30));
         wz_icon(&hero_check, 104, 64, COL_GREEN);
@@ -219,6 +245,10 @@ static void wifi_wizard_render(void)
             lv_label_set_text(WZ.body, "Network updated");
             lv_obj_align(WZ.body, LV_ALIGN_CENTER, 0, SERIN_PX(86));
             lv_obj_remove_flag(WZ.body, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(WZ.hint, H_PRESS("finish"));
+            lv_obj_remove_flag(WZ.hint, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (!wifi_offer_pairing()) {
             lv_label_set_text(WZ.hint, H_PRESS("finish"));
             lv_obj_remove_flag(WZ.hint, LV_OBJ_FLAG_HIDDEN);
         }
@@ -294,26 +324,20 @@ void wifi_press(void)
         break;
     case WZ_JOINQR:
         if (WZ.change) wifi_wizard_back_cb(NULL);
-        else           ui_show_screen(SCREEN_THERMOSTAT);
+        else           wifi_finish();
         break;
     case WZ_DONE:
-        if (WZ.change) { wifi_wizard_back_cb(NULL); break; }
-        WZ.st = WZ_HK;
-        WZ.wait_s = 0;
-        WZ.qr_s = 0;
-        WZ.saw_unpaired = (s_state.hk_paired <= 0);
-        wifi_wizard_render();
+        wifi_complete();
         break;
     case WZ_HK:
-        ui_show_screen(SCREEN_THERMOSTAT);
+        wifi_finish();
         break;
     case WZ_QR:
     case WZ_IPQR:
         wifi_wizard_back_cb(NULL);
         break;
     case WZ_PAIRED:
-        if (WZ.from_settings) wifi_wizard_back_cb(NULL);
-        else ui_show_screen(SCREEN_THERMOSTAT);
+        wifi_wizard_back_cb(NULL);
         break;
     default: break;
     }
@@ -321,8 +345,8 @@ void wifi_press(void)
 
 void wifi_back(void)
 {
-    if (WZ.st == WZ_JOINQR && !WZ.change) { ui_show_screen(SCREEN_THERMOSTAT); return; }
-    if (WZ.st == WZ_HK) { ui_show_screen(SCREEN_THERMOSTAT); return; }
+    if (WZ.st == WZ_JOINQR && !WZ.change) { wifi_finish(); return; }
+    if (WZ.st == WZ_HK) { wifi_finish(); return; }
     if (WZ.st == WZ_PAIRED) { wifi_press(); return; }
     wifi_wizard_back_cb(NULL);
 }
@@ -331,7 +355,7 @@ void build_wifi(void)
 {
     lv_obj_t *p = s_panel[SCREEN_WIFI] = mkpanel(COL_FACE, true);
 
-    WZ.title = mklabel(p, FONT_SET_NAME, SET_COL[SET_WIFI], "WiFi");
+    WZ.title = mklabel(p, FONT_SET_NAME, SET_COL[SET_WIFI], "Wi-Fi");
     lv_obj_set_style_text_align(WZ.title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(WZ.title, LV_ALIGN_TOP_MID, 0, SERIN_PX(64));
 
@@ -378,7 +402,15 @@ void wifi_destroy(void)
 
 void refresh_wifi(void)
 {
-    if (!s_panel[SCREEN_WIFI]) return;
+    if (!s_panel[SCREEN_WIFI] || s_cur != SCREEN_WIFI) return;
+    if ((WZ.st == WZ_HK || WZ.st == WZ_QR) && !home_pairing_supported()) {
+        settings_land(SET_WIFI);
+        return;
+    }
+    if (WZ.st == WZ_DONE) {
+        wifi_wizard_render();
+        return;
+    }
     if (!s_state.wifi_connected || s_state.alert == ALERT_NOLINK)
         WZ.saw_offline = true;
     if (s_state.wifi_setup_ap) WZ.saw_ap = true;
@@ -413,19 +445,24 @@ void refresh_wifi(void)
     }
 }
 
+/* Leaving the wizard goes back where it was opened from.  The wizard is a
+ * transient screen and so never joins the back trail, which is why the entry
+ * point is remembered here instead. */
 static void wifi_wizard_back_cb(lv_event_t *e)
 {
     (void)e;
-    bool was_hk = (WZ.st == WZ_QR || (WZ.st == WZ_PAIRED && WZ.from_settings));
-    settings_land(was_hk ? SET_HOMEKIT : SET_WIFI);
+    if (!WZ.from_settings) { ui_show_screen(SCREEN_THERMOSTAT); return; }
+    settings_land(WZ.home_entry ? SET_HOMEKIT : SET_WIFI);
 }
 
 void homekit_qr_entry(void)
 {
-    if (!s_bridge.online) { settings_chip_dialog(SET_HOMEKIT); return; }
+    if (!home_pairing_supported()) return;
+    if (!s_link.online) { settings_chip_dialog(SET_HOMEKIT); return; }
     ui_show_screen(SCREEN_WIFI);
     WZ.st = WZ_QR;
     WZ.from_settings = true;
+    WZ.home_entry = true;
     WZ.saw_unpaired = (s_state.hk_paired <= 0);
     wifi_tick_arm();
     wifi_wizard_render();
@@ -433,13 +470,14 @@ void homekit_qr_entry(void)
 
 static void wifi_ip_qr_entry(void)
 {
-    if (!s_bridge.online || !s_state.wifi_connected || !s_state.wifi_ip[0]) {
+    if (!s_link.online || !s_state.wifi_connected || !s_state.wifi_ip[0]) {
         settings_chip_dialog(SET_WIFI);
         return;
     }
     ui_show_screen(SCREEN_WIFI);
     WZ.st = WZ_IPQR;
     WZ.from_settings = true;
+    WZ.home_entry = false;
     WZ.qr_s = 0;
     wifi_tick_arm();
     wifi_wizard_render();

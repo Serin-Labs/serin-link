@@ -13,8 +13,13 @@ void espnow_client_on_room_source_id(uint64_t source_id);
 void espnow_client_begin_pairing(void);
 void espnow_client_cancel_pairing(void);
 void espnow_client_forget(void);
-bool espnow_client_request_wifi(char *ssid, size_t ssid_len,
-                                char *psk, size_t psk_len, uint32_t timeout_ms);
+typedef enum {
+    ESPNOW_WIFI_REQ_OK,
+    ESPNOW_WIFI_REQ_NO_REPLY,
+    ESPNOW_WIFI_REQ_NO_CREDS,
+} espnow_wifi_req_t;
+espnow_wifi_req_t espnow_client_request_wifi(char *ssid, size_t ssid_len,
+                                             char *psk, size_t psk_len, uint32_t timeout_ms);
 void espnow_client_ota_pause(bool paused);
 
 void espnow_client_radio_ps_override(bool enable, bool min);

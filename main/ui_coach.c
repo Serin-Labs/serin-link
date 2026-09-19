@@ -4,6 +4,7 @@
 #include "ui_internal.h"
 #include "ui_arim.h"
 #include "prefs.h"
+#include "serin_input.h"
 
 #define COACH_KEY            "coach"
 #define COACH_POLL_MS        1000
@@ -31,8 +32,9 @@
 #define TARR_R           190
 #define TARR_SLIDE_X     12
 #define TARR_SLIDE_Y     21
+#define SARR_ZONE_OPA    LV_OPA_20
 
-typedef enum { ST_TURN = 0, ST_MODE, ST_MENU, ST_FLICK, ST_N } coach_step_t;
+typedef enum { ST_TURN = 0, ST_TAP, ST_MODE, ST_MENU, ST_FLICK, ST_N } coach_step_t;
 
 typedef struct {
     bool (*rect_fn)(lv_area_t *);
@@ -44,9 +46,10 @@ typedef struct {
 
 static const coach_step_def_t STEPS[ST_N] = {
     [ST_TURN]  = { NULL,             0,  "Turn to change temperature", COACH_CAP_Y_LOW, SCREEN_COUNT   },
+    [ST_TAP]   = { NULL,             0,  "Tap the sides to step temperature", COACH_CAP_Y_LOW, SCREEN_COUNT },
     [ST_MODE]  = { home_pill_rect,   0,  "Tap to change mode",         0,               SCREEN_MODE    },
     [ST_MENU]  = { home_hero_rect,   24, "Tap or press for menu",      0,               SCREEN_MENU    },
-    [ST_FLICK] = { home_airbtn_rect, 0,  "Swipe up for airflow",       216,             SCREEN_FANVANE },
+    [ST_FLICK] = { home_airbtn_rect, 0,  "Flick up for airflow",       216,             SCREEN_FANVANE },
 };
 
 static lv_obj_t    *s_grp;
@@ -54,6 +57,7 @@ static lv_obj_t    *s_ring;
 static lv_obj_t    *s_tarr[2];
 static lv_point_t   s_tarr_org[2];
 static lv_point_t   s_tarr_vec[2];
+static lv_obj_t    *s_sarr[2];
 static arim_t       s_arim_coach;
 static int32_t      s_demo_deg;
 static lv_timer_t  *s_poll;
@@ -66,6 +70,8 @@ static bool         s_pending;
 static bool         s_turn_cw;
 static bool         s_turn_ccw;
 static uint32_t     s_turn_last;
+static bool         s_tap_l;
+static bool         s_tap_r;
 static bool         s_closing;
 static int          s_zone_snap;
 static bool         s_has_hole;
@@ -96,6 +102,7 @@ static void teardown(void)
     if (s_grp) { lv_obj_delete(s_grp); s_grp = NULL; }
     s_ring = NULL;
     s_tarr[0] = s_tarr[1] = NULL;
+    s_sarr[0] = s_sarr[1] = NULL;
     s_closing = false;
 }
 
@@ -190,6 +197,32 @@ static void tarr_show(bool cw)
     }
 }
 
+/* Side-tap hints: each outer SERIN_SIDE_TAP_PCT zone is shown as a translucent
+ * strip with a "-" (left) or "+" (right) in its middle. A side that has been
+ * tapped loses its strip. */
+static void sarr_hide(int i)
+{
+    if (s_sarr[i]) { lv_obj_delete(s_sarr[i]); s_sarr[i] = NULL; }
+}
+
+static void sarr_show(void)
+{
+    int32_t zone = SERIN_DISP * SERIN_SIDE_TAP_PCT / 100;
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *z = s_sarr[i] = lv_obj_create(s_grp);
+        lv_obj_remove_style_all(z);
+        lv_obj_set_size(z, zone, SERIN_DISP);
+        lv_obj_set_pos(z, i ? SERIN_DISP - zone : 0, 0);
+        lv_obj_set_style_bg_color(z, lv_color_hex(COL_WHITE), 0);
+        lv_obj_set_style_bg_opa(z, SARR_ZONE_OPA, 0);
+        lv_obj_remove_flag(z, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(z, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_move_to_index(z, 1);   /* above the scrim, beneath the ring */
+        lv_obj_t *l = mklabel(z, FONT_DIAL_MODE, COL_WHITE, i ? "+" : "-");
+        lv_obj_center(l);
+    }
+}
+
 static void step_show(coach_step_t st)
 {
     const coach_step_def_t *d = &STEPS[st];
@@ -225,13 +258,18 @@ static void step_show(coach_step_t st)
     } else {
         scrim_full();
         cap_y = SERIN_PX(d->cap_y);
-        if (st == ST_TURN) {
+        if (st == ST_TURN || st == ST_TAP) {
             s_arim_coach = (arim_t){ .col = mode_accent(s_state.mode) };
             s_ring = arim_ring_create(g, &s_arim_coach);
-            s_demo_deg = home_arc_fill_deg();
+            if (st == ST_TURN) s_demo_deg = home_arc_fill_deg();  /* TAP carries it over */
             arim_progress(s_ring, s_demo_deg, mode_accent(s_state.mode), false);
+        }
+        if (st == ST_TURN) {
             s_turn_cw = s_turn_ccw = false;
             tarr_show(true);
+        } else if (st == ST_TAP) {
+            s_tap_l = s_tap_r = false;
+            sarr_show();
         }
     }
 
@@ -332,22 +370,45 @@ static void wd_cb(lv_timer_t *t)
         advance();
         return;
     }
+    if (s_step == ST_TAP && s_tap_l && s_tap_r
+        && lv_tick_elaps(s_turn_last) >= COACH_TURN_SETTLE_MS) {
+        advance();
+        return;
+    }
 
     if (--s_life <= 0) advance();
 }
 
 bool coach_sandbox_active(void)
 {
-    return s_grp && !s_closing && s_step == ST_TURN;
+    return s_grp && !s_closing && (s_step == ST_TURN || s_step == ST_TAP);
+}
+
+static void demo_ring_step(int delta)
+{
+    s_demo_deg += delta * COACH_RING_STEP_DEG;
+    if (s_demo_deg < 0) s_demo_deg = 0;
+    if (s_demo_deg > ARIM_SPAN_DEG) s_demo_deg = ARIM_SPAN_DEG;
+    arim_progress(s_ring, s_demo_deg, mode_accent(s_state.mode), false);
+    s_turn_last = lv_tick_get();
+    s_life = COACH_STEP_LIFE_MS / COACH_WD_MS;
+}
+
+bool coach_demo_tap(int dir)
+{
+    if (!coach_sandbox_active()) return false;
+    demo_ring_step(dir);
+    if (s_step != ST_TAP) return true;
+    if (dir < 0 && !s_tap_l) { s_tap_l = true; sarr_hide(0); }
+    if (dir > 0 && !s_tap_r) { s_tap_r = true; sarr_hide(1); }
+    return true;
 }
 
 bool coach_demo_turn(int delta)
 {
     if (!coach_sandbox_active()) return false;
-    s_demo_deg += delta * COACH_RING_STEP_DEG;
-    if (s_demo_deg < 0) s_demo_deg = 0;
-    if (s_demo_deg > ARIM_SPAN_DEG) s_demo_deg = ARIM_SPAN_DEG;
-    arim_progress(s_ring, s_demo_deg, mode_accent(s_state.mode), false);
+    demo_ring_step(delta);
+    if (s_step != ST_TURN) return true;
     if (delta > 0 && !s_turn_cw) {
         s_turn_cw = true;
         if (s_turn_ccw) tarr_hide(); else tarr_show(false);
@@ -355,8 +416,6 @@ bool coach_demo_turn(int delta)
         s_turn_ccw = true;
         if (s_turn_cw) tarr_hide();
     }
-    s_turn_last = lv_tick_get();
-    s_life = COACH_STEP_LIFE_MS / COACH_WD_MS;
     return true;
 }
 

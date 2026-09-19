@@ -100,27 +100,28 @@ void refresh_update(void)
             b2 = "Cancel"; h = H_PRESS("cancel");
             break;
         case OTA_UI_CONFIRM:
-            snprintf(ver, sizeof ver, "v%s -> v%s", cur, s_ota_txt);
+            /* Big line already states the new version; small line stays on the current one. */
+            snprintf(ver, sizeof ver, "v%s", cur);
             snprintf(big, sizeof big, "v%s", s_ota_txt);
             bigcol = COL_GREEN;
             cap = "Update available";
             b1 = "Install"; b2 = "Cancel"; h = H_PRESS("install");
             break;
         case OTA_UI_DOWNLOAD:
-            snprintf(ver, sizeof ver, "v%s -> v%s", cur, s_ota_txt);
+            snprintf(ver, sizeof ver, "v%s \xE2\x86\x92 v%s", cur, s_ota_txt);
             snprintf(big, sizeof big, "%d%%", s_ota_pct);
             cap = "Downloading";
             b2 = "Cancel"; h = H_PRESS("cancel");
             arc = true;
             break;
         case OTA_UI_VERIFY:
-            snprintf(ver, sizeof ver, "v%s -> v%s", cur, s_ota_txt);
+            snprintf(ver, sizeof ver, "v%s \xE2\x86\x92 v%s", cur, s_ota_txt);
             snprintf(big, sizeof big, "Verifying");
             cap = "Checking the downloaded image";
             arc = true;
             break;
         case OTA_UI_OK:
-            snprintf(ver, sizeof ver, "v%s -> v%s", cur, s_ota_txt);
+            snprintf(ver, sizeof ver, "v%s \xE2\x86\x92 v%s", cur, s_ota_txt);
             snprintf(big, sizeof big, "Installed");
             bigcol = COL_GREEN;
             cap = "Restarting";
@@ -238,7 +239,7 @@ static void about_start_update_cb(void *unused)
 {
     (void)unused;
     if (s_cur != SCREEN_ABOUT) return;
-    if (!s_bridge.online || !ota_check_available()) return;
+    if (!s_link.online || !ota_check_available()) return;
     s_ota_st = OTA_UI_CHECKING;
     ui_show_screen(SCREEN_UPDATE);
     notify_ota_check();
@@ -345,7 +346,7 @@ void build_about(void)
     }
     if (feat & SL2_FEAT_WIFI_INFO) {
         about_row(AB.cont, "IP",        AB_U_IP);
-        about_row(AB.cont, "WiFi",      AB_U_SSID);
+        about_row(AB.cont, "Wi-Fi",     AB_U_SSID);
         about_row(AB.cont, "Signal",    AB_U_RSSI);
         about_row(AB.cont, "Channel",   AB_U_CH);
     }
@@ -387,6 +388,22 @@ void build_about(void)
     for (unsigned i = 0; i < sizeof wide / sizeof wide[0]; i++)
         if (AB.val[wide[i]])
             lv_obj_set_style_max_width(AB.val[wide[i]], SERIN_PX(212), 0);
+
+    /* Fade the last visible rows out instead of clipping them mid-glyph behind
+       the floating Update/Back buttons. Created after AB.cont and before the
+       button row so it paints above the list and below the buttons. */
+    lv_obj_t *fade = lv_obj_create(p);
+    lv_obj_remove_style_all(fade);
+    lv_obj_set_size(fade, SERIN_PX(280), SERIN_PX(40));
+    lv_obj_align(fade, LV_ALIGN_TOP_MID, 0, SERIN_PX(94 + 262 - 40));
+    lv_obj_set_style_bg_color(fade, lv_color_hex(COL_FACE), 0);
+    lv_obj_set_style_bg_grad_color(fade, lv_color_hex(COL_FACE), 0);
+    lv_obj_set_style_bg_grad_dir(fade, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(fade, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_main_opa(fade, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_grad_opa(fade, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(fade, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(fade, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *row = lv_obj_create(p);
     lv_obj_remove_style_all(row);
@@ -451,10 +468,10 @@ void refresh_about(void)
         } else lv_label_set_text(AB.val[AB_U_FW], AB_DASH);
         lv_label_set_text(AB.val[AB_U_BUILD], s->diag_seen ? s->unit_build : AB_DASH);
     }
-    if (s_bridge.bonded)
+    if (s_link.bonded)
         lv_label_set_text_fmt(AB.val[AB_U_MAC], "%02X:%02X:%02X:%02X:%02X:%02X",
-                              s_bridge.mac[0], s_bridge.mac[1], s_bridge.mac[2],
-                              s_bridge.mac[3], s_bridge.mac[4], s_bridge.mac[5]);
+                              s_link.mac[0], s_link.mac[1], s_link.mac[2],
+                              s_link.mac[3], s_link.mac[4], s_link.mac[5]);
     else lv_label_set_text(AB.val[AB_U_MAC], AB_DASH);
     if (AB.row[AB_U_UP]) {
         if (s->diag_seen) { about_fmt_uptime(b, sizeof b, s->unit_uptime_s);
@@ -476,17 +493,17 @@ void refresh_about(void)
         else lv_label_set_text(AB.val[AB_U_CH], AB_DASH);
     }
 
-    lv_label_set_text(AB.val[AB_L_STATE], s_bridge.online ? "Online" : "Offline");
+    lv_label_set_text(AB.val[AB_L_STATE], s_link.online ? "Online" : "Offline");
     lv_obj_set_style_text_color(AB.val[AB_L_STATE],
-        lv_color_hex(s_bridge.online ? COL_GREEN : COL_ALERT_NOLINK), 0);
-    if (s_bridge.online) lv_label_set_text_fmt(AB.val[AB_L_RSSI], "%d dBm", s_bridge.rssi);
+        lv_color_hex(s_link.online ? COL_GREEN : COL_ALERT_NOLINK), 0);
+    if (s_link.online) lv_label_set_text_fmt(AB.val[AB_L_RSSI], "%d dBm", s_link.rssi);
     else                 lv_label_set_text(AB.val[AB_L_RSSI], AB_DASH);
     about_refresh_time();
 
-    lv_label_set_text(AB.val[AB_H_CN], !s_bridge.online ? AB_DASH
+    lv_label_set_text(AB.val[AB_H_CN], !s_link.online ? AB_DASH
                       : (s->cn105_connected ? "Connected" : "Not connected"));
     if (AB.row[AB_H_MODE]) {
-        if (!s_bridge.online) {
+        if (!s_link.online) {
             lv_label_set_text(AB.val[AB_H_MODE], AB_DASH);
             lv_label_set_text(AB.val[AB_H_HZ],   AB_DASH);
         } else {
@@ -505,7 +522,7 @@ void refresh_about(void)
             (s->diag_seen && s->auto_sub_mode < 4) ? LEAN[s->auto_sub_mode] : AB_DASH);
     }
     if (AB.row[AB_H_OUT]) {
-        if (s_bridge.online && s->outside_valid)
+        if (s_link.online && s->outside_valid)
             lv_label_set_text_fmt(AB.val[AB_H_OUT], "%d\xC2\xB0", s->outside_temp);
         else lv_label_set_text(AB.val[AB_H_OUT], AB_DASH);
     }
@@ -571,7 +588,7 @@ void refresh_about(void)
         }
     }
 
-    if (s_bridge.online && (s_caps.features & SL2_FEAT_LINK_OTA_CREDS))
+    if (s_link.online && (s_caps.features & SL2_FEAT_LINK_OTA_CREDS))
         lv_obj_remove_flag(AB.upd, LV_OBJ_FLAG_HIDDEN);
     else {
         lv_obj_add_flag(AB.upd, LV_OBJ_FLAG_HIDDEN);
@@ -622,7 +639,7 @@ void ota_action(void)
             if (s_cur == SCREEN_UPDATE) settings_land(SET_ABOUT);
             else                         refresh_settings();
             break;
-        case OTA_UI_HIDDEN:   if (s_bridge.online) notify_ota_check(); break;
+        case OTA_UI_HIDDEN:   if (s_link.online) notify_ota_check(); break;
         default: break;
     }
 }

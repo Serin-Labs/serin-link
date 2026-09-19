@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *TAG = "sht4x";
+static const char *TAG = "sensor_sht40";
 
 #define SHT40_PORT        I2C_NUM_1
 #define SHT40_HZ          100000

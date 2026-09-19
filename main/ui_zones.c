@@ -100,6 +100,7 @@ void refresh_zones(void) {
     }
     if (back) {
         lv_label_set_text(ZP.name, "Back");
+        lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_BACK), 0);
         lv_obj_add_flag(ZP.statRow,  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ZP.stateRow, LV_OBJ_FLAG_HIDDEN);
@@ -108,6 +109,10 @@ void refresh_zones(void) {
     lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_WHITE), 0);
     char nm[48]; zone_disp_name(s_zone_sel, nm, sizeof nm);
     lv_label_set_text(ZP.name, nm);
+    /* The displayed zone is the focused one, so it may reveal its full name
+     * after LVGL's standard scroll delay while every other zone remains in
+     * the rim.  The fixed one-line box prevents it from moving the readout. */
+    lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_SCROLL);
     const ui_zone_info_t *z = &s_zinfo[s_zone_sel];
     lv_obj_remove_flag(ZP.stateRow, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text_fmt(ZP.badge, "%s%s", zone_badge_txt(z->badge),
@@ -131,7 +136,9 @@ void refresh_zones(void) {
                               zone_state_txt(z), tgt);
     else
         lv_label_set_text(ZP.modeTxt, zone_state_txt(z));
-    lv_obj_set_style_text_color(ZP.modeTxt, lv_color_hex(mode_accent(z->mode)), 0);
+    bool zoff = (z->mode == MODE_OFF || z->status == ST_OFF);
+    lv_obj_set_style_text_color(ZP.modeTxt,
+                                lv_color_hex(zoff ? COL_GREY : mode_accent(z->mode)), 0);
     lv_obj_update_layout(s_panel[SCREEN_ZONES]);
     lv_obj_align_to(ZP.deg, ZP.nowNum, LV_ALIGN_OUT_RIGHT_MID, 0, 0);
 }
@@ -176,6 +183,10 @@ void build_zones(void) {
     lv_obj_t *c = mkcol(p, SERIN_PX(320), 10, 0);
     lv_obj_center(c);
     ZP.name = mklabel(c, FONT_SET_NAME, COL_WHITE, "");
+    lv_obj_set_width(ZP.name, SERIN_PX(310));
+    lv_obj_set_height(ZP.name, lv_font_get_line_height(FONT_SET_NAME));
+    lv_obj_set_style_text_align(ZP.name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_DOT);
     lv_obj_t *row = ZP.statRow = mkcol(c, LV_PCT(100), 4, 0);
     ZP.nowNum  = mklabel(row, FONT_SSID, COL_WHITE, "");
     ZP.deg  = mklabel(row, FONT_SSID, COL_WHITE, "\xC2\xB0");
@@ -202,6 +213,9 @@ void zone_swipe(int step)
 }
 
 void zones_commit(void) {
+    /* The trailing stop is Back, so it retraces; picking a zone is a commit and
+     * lands on the thermostat, where the newly active zone is what you see. */
+    if (s_zone_sel >= ZR.n - 1) { ui_back(); return; }
     zone_switch_request(s_zone_sel);
     ui_show_screen(SCREEN_THERMOSTAT);
 }
@@ -211,6 +225,6 @@ void zones_changed(int n)
     if (!s_panel[SCREEN_ZONES]) return;
     if (ZR.n == n + 1) { refresh_zones(); return; }
 
-    if (s_cur == SCREEN_ZONES && n < 2) { ui_show_screen(SCREEN_THERMOSTAT); return; }
+    if (s_cur == SCREEN_ZONES && n < 2) { ui_back(); return; }
     screen_rebuild(SCREEN_ZONES);
 }

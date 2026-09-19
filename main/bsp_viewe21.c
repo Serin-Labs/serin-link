@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include "esp_lvgl_port.h"
 #include "bsp_touch.h"
+#include "bsp_common.h"
 #include "esp_rom_sys.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -250,9 +251,13 @@ lv_display_t *bsp_display_start(void) {
     const lvgl_port_display_rgb_cfg_t rgb_lvgl = {
         .flags = { .bb_mode = false, .avoid_tearing = true },
     };
+    /* See bsp_viewe.c: taskLVGL may render as soon as add_disp drops the lock,
+     * so every LVGL call on the bring-up path holds the (recursive) mutex. */
+    ESP_ERROR_CHECK(lvgl_port_lock(0) ? ESP_OK : ESP_ERR_TIMEOUT);
     lv_display_t *disp = lvgl_port_add_disp_rgb(&dcfg, &rgb_lvgl);
     ESP_LOGI(TAG, "LVGL disp %dx%d", (int)lv_display_get_horizontal_resolution(disp),
              (int)lv_display_get_vertical_resolution(disp));
+    lvgl_port_unlock();
 
     ESP_LOGI(TAG, "touch CST816S");
     i2c_master_bus_config_t bus_cfg = {
@@ -290,21 +295,7 @@ static void (*s_on_down)(void);
 static void (*s_on_up)(void);
 static pcnt_unit_handle_t s_pcnt;
 
-static bool s_btn_gpio_ready;
-static void btn_gpio_ensure(void)
-{
-    if (s_btn_gpio_ready) return;
-    gpio_config_t btn = { .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pin_bit_mask = BIT64(PIN_BTN) };
-    ESP_ERROR_CHECK(gpio_config(&btn));
-    s_btn_gpio_ready = true;
-}
-
-bool bsp_button_pressed(void)
-{
-    btn_gpio_ensure();
-    return gpio_get_level(PIN_BTN) == 0;
-}
+bool bsp_button_pressed(void) { return bsp_btn_is_pressed(PIN_BTN); }
 
 static void input_task(void *arg) {
     int last = 0;
@@ -316,7 +307,7 @@ static void input_task(void *arg) {
         int diff = (cnt - last) / ENC_PER_DETENT;
         if (diff != 0) {
             last += diff * ENC_PER_DETENT;
-            if (s_on_enc && lvgl_port_lock(0)) { s_on_enc(diff); lvgl_port_unlock(); }
+            bsp_ui_call_i(s_on_enc, diff);
         }
         int raw = gpio_get_level(PIN_BTN) ? 1 : 0;
         if (raw != btn_last) { btn_last = raw; t_change = xTaskGetTickCount(); }
@@ -324,16 +315,16 @@ static void input_task(void *arg) {
             btn_stable = raw;
             if (btn_stable == 0) {
                 t_press = xTaskGetTickCount(); hold_fired = 0;
-                if (s_on_down && lvgl_port_lock(0)) { s_on_down(); lvgl_port_unlock(); }
+                bsp_ui_call(s_on_down);
             } else {
-                if (s_on_up && lvgl_port_lock(0)) { s_on_up(); lvgl_port_unlock(); }
-                if (!hold_fired && s_on_btn && lvgl_port_lock(0)) { s_on_btn(); lvgl_port_unlock(); }
+                bsp_ui_call(s_on_up);
+                if (!hold_fired) bsp_ui_call(s_on_btn);
             }
         }
         if (btn_stable == 0 && !hold_fired &&
             (xTaskGetTickCount() - t_press) > pdMS_TO_TICKS(BTN_HOLD_MS)) {
             hold_fired = 1;
-            if (s_on_btn_hold && lvgl_port_lock(0)) { s_on_btn_hold(); lvgl_port_unlock(); }
+            bsp_ui_call(s_on_btn_hold);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -348,7 +339,7 @@ void bsp_input_start(void (*on_encoder)(int), void (*on_button)(void),
     s_on_down = on_press_down;
     s_on_up = on_press_up;
 
-    btn_gpio_ensure();
+    bsp_btn_gpio_ensure(PIN_BTN);
 
     pcnt_unit_config_t ucfg = { .high_limit = 1000, .low_limit = -1000 };
     ESP_ERROR_CHECK(pcnt_new_unit(&ucfg, &s_pcnt));

@@ -5,6 +5,7 @@
 #include "ui_arim.h"
 #include "icons.h"
 #include "factory_reset.h"
+#include "sl2_proto.h"
 #include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,8 @@ bool dlg_resetting(void) { return s_resetting; }
 static arim_t s_arim_reset;
 
 #define DLG_BODY_W       300
+#define DLG_HERO_PX       36
+#define DLG_INFO_HERO_PX  45   /* lands on the icons' native 45 px bake on both panels */
 #define DLG_COL_PAD_ROW  18
 #define DLG_PILL_R       24
 #define DLG_PILL_PAD_H   22
@@ -61,6 +64,10 @@ static dlg_action_t s_dlg_action;
 static uint8_t      s_dlg_sig;
 static int          s_dlg_nbtn = 2;
 static bool         s_dlg_has_action = true;
+
+/* Which live signature, if any, closes the dialog out from under the user.
+ * STATIC dialogs describe nothing live, so nothing should tear them down. */
+enum { DLG_SCOPE_ALERT, DLG_SCOPE_SET, DLG_SCOPE_STATIC };
 static uint8_t      s_dlg_scope;
 static dial_face_t  s_dlg_dismiss_face = DIAL_LIVE;
 
@@ -78,7 +85,7 @@ static void reset_face_show(void);
 
 static uint8_t dlg_alert_sig(void)
 {
-    if (!s_bridge.bonded)               return 0;
+    if (!s_link.bonded)                 return 0;
     if (s_state.alert != ALERT_NONE)    return (uint8_t)(1 + s_state.alert);
     if (!s_state.cn105_connected)       return 10;
     if (s_state.sensor_batt_low
@@ -88,8 +95,8 @@ static uint8_t dlg_alert_sig(void)
 
 static uint8_t dlg_set_sig(void)
 {
-    return (uint8_t)((s_bridge.bonded         ? 1u  : 0u)
-                   | (s_bridge.online         ? 2u  : 0u)
+    return (uint8_t)((s_link.bonded           ? 1u  : 0u)
+                   | (s_link.online           ? 2u  : 0u)
                    | (s_state.wifi_connected  ? 4u  : 0u)
                    | (s_state.hk_paired > 0   ? 8u  : 0u)
                    | (s_state.err_count       ? 16u : 0u)
@@ -99,22 +106,41 @@ static uint8_t dlg_set_sig(void)
 void dlg_check_close(void)
 {
     if (!s_dlg) return;
-    uint8_t now = s_dlg_scope ? dlg_set_sig() : dlg_alert_sig();
+    if (s_dlg_scope == DLG_SCOPE_STATIC) return;
+    uint8_t now = (s_dlg_scope == DLG_SCOPE_SET) ? dlg_set_sig() : dlg_alert_sig();
     if (now != s_dlg_sig) alert_dialog_hide();
 }
 
-void alert_dialog_hide(void)
+/* With Transitions on, dialogs the user opens or closes swap while the panel
+ * light is dipped.  A closing dialog stays up as the leaver until then; an
+ * opening one (and the reset face) waits hidden. */
+static lv_obj_t *s_dlg_leaver;
+static lv_obj_t *s_reset_face;
+
+static void dlg_dark(void)
+{
+    if (s_dlg_leaver) { lv_obj_delete(s_dlg_leaver); s_dlg_leaver = NULL; }
+    if (s_dlg)        lv_obj_remove_flag(s_dlg, LV_OBJ_FLAG_HIDDEN);
+    if (s_reset_face) lv_obj_remove_flag(s_reset_face, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void dlg_hide(bool by_user)
 {
     if (!s_dlg) return;
 
     arim_stop(s_dlg_ring);
     s_dlg_ring = NULL;
 
-    lv_obj_delete(s_dlg);
+    bool shown = !lv_obj_has_flag(s_dlg, LV_OBJ_FLAG_HIDDEN);
+    if (by_user && shown && !s_dlg_leaver && ui_dip_swap(dlg_dark))
+        s_dlg_leaver = s_dlg;
+    else
+        lv_obj_delete(s_dlg);
     s_dlg = NULL;
     s_dlg_dismiss_face = DIAL_LIVE;
-
 }
+
+void alert_dialog_hide(void) { dlg_hide(false); }
 
 static void dlg_apply_sel(void)
 {
@@ -135,16 +161,18 @@ static void dlg_apply_sel(void)
 static void dlg_do_action(void)
 {
     dlg_action_t act = s_dlg_action;
-    alert_dialog_hide();
-    if (act != DLG_DISMISS_BATT && lock_engaged(&s_lock) && home_face_live()) { lock_pill_flash(); return; }
+    dlg_hide(true);
+    if (act != DLG_DISMISS_BATT && child_lock_engaged(&s_child_lock) && home_face_live()) { child_lock_pill_flash(); return; }
     switch (act) {
+        case DLG_NONE:
+            break;
         case DLG_DISMISS_BATT:
             home_batt_dismiss_24h();
             home_hide_alert_chip();
             zchip_refresh();
             break;
-        case DLG_GOTO_SYSTEM:
-            settings_land(SET_SYSTEM);
+        case DLG_GOTO_HEATPUMP:
+            advanced_land_heatpump();
             break;
         case DLG_GOTO_LINK:
             settings_land(SET_LINK);
@@ -165,7 +193,7 @@ void dlg_close_by_user(int sel)
 {
     if (s_dlg_dismiss_face != DIAL_LIVE) face_dismiss(s_dlg_dismiss_face);
     if (sel == 0 && s_dlg_has_action) dlg_do_action();
-    else                              alert_dialog_hide();
+    else                              dlg_hide(true);
 }
 
 static void dlg_btn_click_cb(lv_event_t *e)
@@ -190,8 +218,8 @@ static lv_obj_t *dlg_frame(dlg_action_t action, bool has_action,
 
     s_dlg_action           = action;
     s_dlg_sel              = 0;
-    s_dlg_scope            = (s_cur == SCREEN_SETTINGS) ? 1 : 0;
-    s_dlg_sig              = s_dlg_scope ? dlg_set_sig() : dlg_alert_sig();
+    s_dlg_scope            = (s_cur == SCREEN_SETTINGS) ? DLG_SCOPE_SET : DLG_SCOPE_ALERT;
+    s_dlg_sig              = (s_dlg_scope == DLG_SCOPE_SET) ? dlg_set_sig() : dlg_alert_sig();
     s_dlg_has_action       = has_action;
     s_dlg_press_dismiss    = false;
     s_dlg_backdrop_dismiss = false;
@@ -204,6 +232,7 @@ static lv_obj_t *dlg_frame(dlg_action_t action, bool has_action,
     lv_obj_add_flag(ov, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(ov, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(ov, dlg_backdrop_click_cb, LV_EVENT_CLICKED, NULL);
+    if (ui_dip_swap(dlg_dark)) lv_obj_add_flag(ov, LV_OBJ_FLAG_HIDDEN);
 
     home_stop_alert_rim();
 
@@ -234,14 +263,15 @@ static lv_obj_t *dlg_pill(lv_obj_t *row, const char *text, uint32_t txt_col,
     return btn;
 }
 
-void alert_dialog_show(uint32_t accent, const char *title, const char *body,
-                              const char *primary, dlg_action_t action)
+static void alert_dialog_build(uint32_t accent, const serin_icon_t *icon, int hero_px,
+                               const char *title, const char *body,
+                               const char *primary, dlg_action_t action)
 {
     lv_obj_t *col = dlg_frame(action, primary != NULL, false, 0);
     if (!col) return;
     s_dlg_nbtn = s_dlg_has_action ? 2 : 1;
 
-    mkicon(col, &hero_alert, SERIN_PX(36), accent);
+    mkicon(col, icon, SERIN_PX(hero_px), accent);
     mklabel(col, FONT_SET_NAME, accent, title);
     mkbody(col, FONT_STATUS_SM, COL_DIM, body, SERIN_PX(DLG_BODY_W));
 
@@ -258,6 +288,24 @@ void alert_dialog_show(uint32_t accent, const char *title, const char *body,
     dlg_apply_sel();
 }
 
+void alert_dialog_show(uint32_t accent, const char *title, const char *body,
+                       const char *primary, dlg_action_t action)
+{
+    alert_dialog_build(accent, &hero_alert, DLG_HERO_PX, title, body, primary, action);
+}
+
+/* Explains a setting rather than reporting a condition: leads with the row's own
+ * glyph, carries no action, and outlives any state change while it is up. */
+void info_dialog_show(uint32_t accent, const serin_icon_t *icon,
+                      const char *title, const char *body)
+{
+    alert_dialog_build(accent, icon, DLG_INFO_HERO_PX, title, body, NULL, DLG_NONE);
+    if (!s_dlg) return;
+    s_dlg_scope            = DLG_SCOPE_STATIC;
+    s_dlg_press_dismiss    = true;
+    s_dlg_backdrop_dismiss = true;
+}
+
 void settings_chip_dialog(int idx)
 {
     static const char NOLINK_BODY[] =
@@ -265,22 +313,22 @@ void settings_chip_dialog(int idx)
         "can't reach right now. Restore the link to update it.";
     switch (idx) {
         case SET_WIFI:
-            if (!s_bridge.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No Link", NOLINK_BODY,
+            if (!s_link.online)
+                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
                                   "Go to Link", DLG_GOTO_LINK_ROW);
             else if (!s_state.wifi_connected)
-                alert_dialog_show(COL_GREY, "WiFi Offline",
-                    "The Serin controller is not connected to a WiFi "
+                alert_dialog_show(COL_GREY, "Wi-Fi offline",
+                    "The Serin controller is not connected to a Wi-Fi "
                     "network. Smart home control and firmware updates are "
                     "unavailable until it reconnects.",
                     NULL, DLG_GOTO_LINK_ROW);
             break;
         case SET_HOMEKIT:
-            if (!s_bridge.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No Link", NOLINK_BODY,
+            if (!s_link.online)
+                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
                                   "Go to Link", DLG_GOTO_LINK_ROW);
             else if (s_state.hk_paired <= 0)
-                alert_dialog_show(COL_GREY, "Ready to Pair",
+                alert_dialog_show(COL_GREY, "Ready to pair",
                     hk_protocol() == HK_PROTO_MATTER
                         ? "The controller is not paired with a home yet. In "
                           "your home app (Apple Home, Google Home, or "
@@ -292,34 +340,43 @@ void settings_chip_dialog(int idx)
                     NULL, DLG_GOTO_LINK_ROW);
             break;
         case SET_LINK:
-            if (s_bridge.online) break;
-            if (!s_bridge.bonded)
-                alert_dialog_show(COL_ALERT_NOLINK, "Link Offline",
+            if (s_link.online) break;
+            if (!s_link.bonded)
+                alert_dialog_show(COL_ALERT_NOLINK, "Link offline",
                     "The dial is not paired with a Serin controller, so "
                     "there is nothing to control yet.",
                     "Pair", DLG_PAIR);
             else
                 offline_dialog_build(true, NULL, DLG_GOTO_LINK_ROW);
             break;
+        /* Only reached with no source list to open, so every branch explains
+         * why there is nothing to choose -- never a heat pump fault, which
+         * has its own row under Advanced. */
         case SET_SYSTEM:
-            if (!s_bridge.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No Link", NOLINK_BODY,
+            if (!s_link.online)
+                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
                                   "Go to Link", DLG_GOTO_LINK_ROW);
-            else if (!s_state.cn105_connected)
-                offline_dialog_build(false, NULL, DLG_GOTO_LINK_ROW);
-            else if (s_state.error_code)
-                fault_dialog_show(NULL);
-            else if (s_state.err_count) {
-                char body[160];
-                snprintf(body, sizeof body,
-                    "The heat pump link has logged %u communication "
-                    "error%s. It usually recovers on its own; persistent "
-                    "errors can mean a CN105 wiring problem.",
-                    (unsigned)s_state.err_count,
-                    s_state.err_count == 1 ? "" : "s");
-                alert_dialog_show(COL_ALERT_NOLINK, "Serial Errors", body,
-                                  NULL, DLG_GOTO_LINK_ROW);
-            }
+            else if (!(s_caps.features & SL2_FEAT_LINK_SENSOR))
+                alert_dialog_show(COL_GREY, "Room Sensor",
+                    "The heat pump's own sensor measures the room. This "
+                    "controller offers no other source to choose from.",
+                    NULL, DLG_GOTO_LINK_ROW);
+            else if (s_state.room_src_status == SL2_ROOMST_STALE)
+                alert_dialog_show(COL_ALERT_WARN, "Reading is stale",
+                    "The temperature source has not reported recently. The "
+                    "heat pump keeps running on its own sensor until it "
+                    "does.",
+                    NULL, DLG_GOTO_LINK_ROW);
+            else if (s_state.room_src_status == SL2_ROOMST_UNAVAILABLE)
+                alert_dialog_show(COL_ALERT_WARN, "No reading available",
+                    "The temperature source has no reading. Check its "
+                    "power and its range from the controller.",
+                    NULL, DLG_GOTO_LINK_ROW);
+            else
+                alert_dialog_show(COL_GREY, "Room Sensor",
+                    "The controller lists no sensors to choose from. Add one "
+                    "in its web interface, then pick it here.",
+                    NULL, DLG_GOTO_LINK_ROW);
             break;
         default: break;
     }
@@ -327,10 +384,10 @@ void settings_chip_dialog(int idx)
 
 static void off_chain_rail(lv_obj_t *col)
 {
-    const bool  ok[3]   = { true, s_bridge.online, s_state.cn105_connected };
+    const bool  ok[3]   = { true, s_link.online, s_state.cn105_connected };
     const char *name[3] = { "This dial", "Controller", "Heat pump" };
     const char *stat[3] = { "OK",
-                            s_bridge.online         ? "Linked" : "No reply",
+                            s_link.online           ? "Linked" : "No reply",
                             s_state.cn105_connected ? "Linked" : "No reply" };
 
     lv_obj_t *rail = lv_obj_create(col);
@@ -419,7 +476,7 @@ static void offline_dialog_build(bool link_off, const char *primary, dlg_action_
 
     mkicon(col, &hero_alert, SERIN_PX(36), accent);
     mklabel(col, link_off ? FONT_SET_NAME : FONT_DIAL_PILL, accent,
-            link_off ? "Link Offline" : "Heat Pump Offline");
+            link_off ? "Link offline" : "Heat pump offline");
 
     if (!link_off) off_chain_rail(col);
 
@@ -456,7 +513,7 @@ void offline_dialog_show(dial_face_t face)
     bool takeover = !face_dismissed(face);
 
     offline_dialog_build(link_off, "Settings",
-                         link_off ? DLG_GOTO_LINK : DLG_GOTO_SYSTEM);
+                         link_off ? DLG_GOTO_LINK : DLG_GOTO_HEATPUMP);
 
     if (dlg_is_open())         s_dlg_dismiss_face = takeover ? face : DIAL_LIVE;
     else if (takeover) face_dismiss(face);
@@ -471,7 +528,7 @@ void batt_dialog_show(void)
 
     mkicon(col, &hero_batt, SERIN_PX(104), COL_ALERT_WARN);
 
-    mklabel(col, FONT_DIAL_PILL, COL_ALERT_WARN, "Sensor Battery Low");
+    mklabel(col, FONT_DIAL_PILL, COL_ALERT_WARN, "Sensor battery low");
 
     mkbody(col, FONT_DIAL_NOW, COL_DIM,
         "The remote temperature sensor's battery is running low. "
@@ -500,7 +557,7 @@ void fault_dialog_show(const char *primary)
                  "The dial can't clear it. This clears on its own if the heat pump "
                  "recovers.");
     }
-    alert_dialog_show(COL_ALERT_WARN, "Heat Pump Fault", body, primary, DLG_GOTO_SYSTEM);
+    alert_dialog_show(COL_ALERT_WARN, "Heat pump fault", body, primary, DLG_GOTO_HEATPUMP);
 }
 
 void reset_dialog_show(void)
@@ -511,9 +568,9 @@ void reset_dialog_show(void)
     dlg_alert_ring(COL_ALERT_NOLINK, false);
 
     mkicon(col, &hero_alert, SERIN_PX(36), COL_ALERT_NOLINK);
-    mklabel(col, FONT_SET_NAME, COL_ALERT_NOLINK, "Reset Link?");
+    mklabel(col, FONT_SET_NAME, COL_ALERT_NOLINK, "Reset link?");
     mkbody(col, FONT_STATUS_SM, COL_DIM,
-        "Erases all pairings, WiFi setup choices, and preferences. "
+        "Erases all pairings, Wi-Fi setup choices, and preferences. "
         "Your heat pump keeps running.", SERIN_PX(DLG_BODY_W));
 
     lv_obj_t *row = dlg_pill_row(col);
@@ -537,12 +594,13 @@ static void reset_face_show(void)
 {
     s_resetting = true;
 
-    lv_obj_t *ov = lv_obj_create(lv_layer_top());
+    lv_obj_t *ov = s_reset_face = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(ov);
     lv_obj_set_size(ov, SERIN_DISP, SERIN_DISP);
     lv_obj_set_style_bg_opa(ov, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(ov, lv_color_hex(COL_FACE), 0);
     lv_obj_remove_flag(ov, LV_OBJ_FLAG_SCROLLABLE);
+    if (ui_dip_swap(dlg_dark)) lv_obj_add_flag(ov, LV_OBJ_FLAG_HIDDEN);
 
     s_arim_reset = (arim_t){ .col = COL_ALERT_NOLINK, .opa = LV_OPA_COVER };
     lv_obj_t *ring = arim_ring_create(ov, &s_arim_reset);

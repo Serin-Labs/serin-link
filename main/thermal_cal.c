@@ -8,6 +8,7 @@
 #include "espnow_client.h"
 #include "sensor_sht40.h"
 #include "ui.h"
+#include "wifi_sta.h"
 #include "driver/temperature_sensor.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
@@ -23,10 +24,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *TAG = "cal";
+static const char *TAG = "thermal_cal";
 
 #define SAMPLE_MS 10000
 
+/* The sweep runs unattended for hours on a fixed SAMPLE_MS cadence, so its three
+ * takes of the LVGL lock are bounded rather than lvgl_port_lock(0), which waits
+ * forever. A wedged UI task must not stall the sample stream: each site logs
+ * that the step did not actuate and carries on, which keeps the CSV honest. */
 #define LVGL_LOCK_MS 2000
 
 #define F_PANEL_ASLEEP 0x01
@@ -200,44 +205,12 @@ void thermal_cal_dump(void)
     printf("# dump end\n");
 }
 
-#define JOIN_TIMEOUT_MS 20000
 #define LOAD_BUF        4096
 
-static volatile bool s_got_ip;
 static volatile bool s_load_run;
 static volatile bool s_load_alive;
 static bool          s_wifi_up;
 static bool          s_radio_off;
-static int           s_disc;
-
-static void wifi_evt(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    (void)arg; (void)data;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (++s_disc <= 3 && !s_got_ip) esp_wifi_connect();
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        s_got_ip = true;
-    }
-}
-
-static bool cal_wifi_join(const char *ssid, const char *psk)
-{
-    esp_event_handler_instance_t h1 = NULL, h2 = NULL;
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_evt, NULL, &h1);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_evt, NULL, &h2);
-    s_got_ip = false; s_disc = 0;
-    wifi_config_t wc; memset(&wc, 0, sizeof wc);
-    snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", ssid);
-    snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", psk);
-    esp_wifi_set_config(WIFI_IF_STA, &wc);
-    esp_wifi_connect();
-    for (int i = 0; i < JOIN_TIMEOUT_MS / 100 && !s_got_ip; i++)
-        vTaskDelay(pdMS_TO_TICKS(100));
-    esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, h1);
-    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, h2);
-    if (!s_got_ip) esp_wifi_disconnect();
-    return s_got_ip;
-}
 
 static void load_task(void *arg)
 {
@@ -285,7 +258,7 @@ static uint8_t radio_apply(const cal_regime_t *r)
 
     if (want_wifi && !s_wifi_up) {
         espnow_client_ota_pause(true);
-        if (cal_wifi_join(CONFIG_SERIN_CAL_WIFI_SSID, CONFIG_SERIN_CAL_WIFI_PSK)) {
+        if (wifi_sta_join(CONFIG_SERIN_CAL_WIFI_SSID, CONFIG_SERIN_CAL_WIFI_PSK, NULL)) {
             s_wifi_up = true;
         } else {
             espnow_client_ota_pause(false);

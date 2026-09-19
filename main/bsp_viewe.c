@@ -25,7 +25,10 @@
 #include "esp_heap_caps.h"
 #include "prefs.h"
 #include <string.h>
+#include <stdlib.h>
 #include "bsp_touch.h"
+#include "bsp_common.h"
+#include "ui.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "iot_knob.h"
@@ -101,14 +104,31 @@ static esp_err_t viewe_tx_cmd(uint8_t cmd, const uint8_t *param, size_t n) {
 static int s_bl_pct = 100;
 static bool s_first_frame;
 static bool s_in_slpin;
+static bool s_dark;
+
+/* Transition dip: 255 = the user's level, 0 = black.  The level is raised to
+ * s_dip_curve so a linear ramp reads as an even fade.  0x53 bit 3 is the DCS
+ * "display dimming" flag; it is left off because the panel's own smoothing
+ * lags the ramp, so the new screen could appear before the light reached 0.
+ * Both stay runtime-only bench levers (`bl-dip`). */
+static uint8_t s_scale = 255;
+static uint8_t s_dip_curve = 2;
+static uint8_t s_bl_ctrl = 0x24;
 
 static void backlight_apply(int pct) {
     if (s_io && s_first_frame && !s_in_slpin) {
-        uint8_t ctrl = 0x2C;
-        viewe_tx_cmd(0x53, &ctrl, 1);
-        uint8_t b = (uint8_t)((255 * pct) / 100);
+        viewe_tx_cmd(0x53, &s_bl_ctrl, 1);
+        uint32_t f = 255;
+        for (int i = 0; i < s_dip_curve; i++) f = f * s_scale / 255;
+        uint8_t b = (uint8_t)((255 * pct / 100) * f / 255);
         viewe_tx_cmd(0x51, &b, 1);
     }
+}
+
+void bsp_backlight_scale(uint8_t scale) {
+    if (scale == s_scale) return;
+    s_scale = scale;
+    if (!s_dark) backlight_apply(s_bl_pct);
 }
 
 void bsp_backlight_set(int pct) {
@@ -220,6 +240,35 @@ static int cmd_panel_sleep(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_bl_dip(int argc, char **argv) {
+    for (int i = 1; i + 1 < argc; i += 2) {
+        if (strcmp(argv[i], "curve") == 0) {
+            int c = atoi(argv[i + 1]);
+            if (c < 1 || c > 4) { printf("curve is 1-4\n"); return 1; }
+            s_dip_curve = (uint8_t)c;
+        } else if (strcmp(argv[i], "out") == 0 || strcmp(argv[i], "in") == 0) {
+            uint32_t o, n;
+            ui_dip_ms_get(&o, &n);
+            uint32_t v = (uint32_t)atoi(argv[i + 1]);
+            if (argv[i][0] == 'o') o = v; else n = v;
+            ui_dip_ms_set(o, n);
+        } else if (strcmp(argv[i], "dd") == 0) {
+            bool on = strcmp(argv[i + 1], "on") == 0;
+            s_bl_ctrl = on ? (s_bl_ctrl | 0x08) : (s_bl_ctrl & ~0x08);
+            if (lvgl_port_lock(0)) { backlight_apply(s_bl_pct); lvgl_port_unlock(); }
+        } else {
+            printf("usage: bl-dip [out ms] [in ms] [curve 1-4] [dd on|off]\n");
+            return 1;
+        }
+    }
+    uint32_t o, n;
+    ui_dip_ms_get(&o, &n);
+    printf("bl-dip: out %lu ms  in %lu ms  curve %u  dd %s  (0x53=0x%02X)\n",
+           (unsigned long)o, (unsigned long)n, s_dip_curve,
+           (s_bl_ctrl & 0x08) ? "on" : "off", s_bl_ctrl);
+    return 0;
+}
+
 void bsp_register_console(void) {
     const esp_console_cmd_t c = {
         .command = "panel-sleep",
@@ -227,12 +276,19 @@ void bsp_register_console(void) {
         .func    = cmd_panel_sleep,
     };
     esp_console_cmd_register(&c);
+    const esp_console_cmd_t d = {
+        .command = "bl-dip",
+        .help    = "Transition brightness dip (bench, not saved): bl-dip [out ms] [in ms] [curve 1-4] [dd on|off]",
+        .func    = cmd_bl_dip,
+    };
+    esp_console_cmd_register(&d);
 }
 #else
 void bsp_register_console(void) {}
 #endif
 
 void bsp_display_sleep(bool sleep) {
+    s_dark = sleep;
     backlight_apply(sleep ? 0 : s_bl_pct);
 #if !CONFIG_SERIN_THERMAL_CAL
     if (sleep ? panel_deep() : (s_pw_q != NULL))
@@ -351,12 +407,20 @@ lv_display_t *bsp_display_start(void) {
         .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
         .flags = { .buff_dma = true, .swap_bytes = false },
     };
+    /* Hold the LVGL mutex across bring-up. lv_display_create() arms an immediate
+     * first refresh, and taskLVGL runs at priority 4 unpinned, so it can start
+     * rendering the moment lvgl_port_add_disp() drops the lock internally —
+     * touching the screen after that trips LVGL's invalidate-during-render
+     * assert, which is a silent while(1) here (LV_USE_LOG is off). The port
+     * mutex is recursive, so the nested take inside add_disp is fine. */
+    ESP_ERROR_CHECK(lvgl_port_lock(0) ? ESP_OK : ESP_ERR_TIMEOUT);
     lv_display_t *disp = lvgl_port_add_disp(&dcfg);
     lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
     lv_obj_t *scr0 = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr0, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr0, LV_OPA_COVER, 0);
     lv_display_add_event_cb(disp, first_frame_cb, LV_EVENT_RENDER_READY, NULL);
+    lvgl_port_unlock();
 
     if (s_touch) {
         const lvgl_port_touch_cfg_t tcfg = { .disp = disp, .handle = s_touch };
@@ -374,21 +438,8 @@ static void (*s_on_hold)(void);
 static void (*s_on_down)(void);
 static void (*s_on_up)(void);
 
-static bool s_btn_gpio_ready;
-static void btn_gpio_ensure(void)
-{
-    if (s_btn_gpio_ready) return;
-    gpio_config_t btn = { .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pin_bit_mask = 1ULL << PIN_BTN };
-    ESP_ERROR_CHECK(gpio_config(&btn));
-    s_btn_gpio_ready = true;
-}
+bool bsp_button_pressed(void) { return bsp_btn_is_pressed(PIN_BTN); }
 
-bool bsp_button_pressed(void)
-{
-    btn_gpio_ensure();
-    return gpio_get_level(PIN_BTN) == 0;
-}
 static knob_handle_t s_knob;
 
 typedef enum {
@@ -409,11 +460,11 @@ static volatile bool s_up_latched;
 
 static void ev_apply(const in_ev_t *ev) {
     switch (ev->kind) {
-    case EV_ROTATE: if (s_on_enc  && lvgl_port_lock(0)) { s_on_enc(ev->arg); lvgl_port_unlock(); } break;
-    case EV_CLICK:  if (s_on_btn  && lvgl_port_lock(0)) { s_on_btn();        lvgl_port_unlock(); } break;
-    case EV_HOLD:   if (s_on_hold && lvgl_port_lock(0)) { s_on_hold();       lvgl_port_unlock(); } break;
-    case EV_DOWN:   if (s_on_down && lvgl_port_lock(0)) { s_on_down();       lvgl_port_unlock(); } break;
-    case EV_UP:     if (s_on_up   && lvgl_port_lock(0)) { s_on_up();         lvgl_port_unlock(); } break;
+    case EV_ROTATE: bsp_ui_call_i(s_on_enc, ev->arg); break;
+    case EV_CLICK:  bsp_ui_call(s_on_btn);            break;
+    case EV_HOLD:   bsp_ui_call(s_on_hold);           break;
+    case EV_DOWN:   bsp_ui_call(s_on_down);           break;
+    case EV_UP:     bsp_ui_call(s_on_up);             break;
     default: break;
     }
 }

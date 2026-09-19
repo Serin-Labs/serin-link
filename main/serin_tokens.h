@@ -34,6 +34,8 @@
 #define SERIN_RIM_W_IDLE    3
 #define UI_FADE_MS          400
 #define UI_FADE_OUT_MS      100
+#define UI_DIP_OUT_MS       60
+#define UI_DIP_IN_MS        200
 #define SERIN_IND_HALF_DEG  8.5f
 
 #if SERIN_DISP == 466

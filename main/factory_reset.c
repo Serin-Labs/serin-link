@@ -12,6 +12,11 @@ reset_gesture_t reset_gesture_step(bool held_at_boot, bool held_now, int hold_ms
     return (hold_ms >= RG_FIRE_MS) ? RG_FIRE : RG_WAITING;
 }
 
+bool reset_gesture_boot_armed(bool power_on, bool held)
+{
+    return power_on && held;
+}
+
 #ifndef HOST_TEST
 #include "ui_theme.h"
 #include "ui_fonts_dial.h"
@@ -89,7 +94,8 @@ void factory_reset_execute(void)
 
 void factory_reset_boot_check(void)
 {
-    if (!bsp_button_pressed()) return;
+    if (!reset_gesture_boot_armed(esp_reset_reason() == ESP_RST_POWERON,
+                                  bsp_button_pressed())) return;
 
     lv_obj_t *face = NULL, *arc = NULL;
     if (lvgl_port_lock(0)) {

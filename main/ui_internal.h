@@ -8,15 +8,15 @@
 #include "ui_theme.h"
 #include "ui_widgets.h"
 #include "ui_fonts_dial.h"
-#include "ui_lock.h"
+#include "child_lock.h"
 #include "hk_proto.h"
 #include "ui_setif.h"
 
-typedef struct { bool bonded, online; uint8_t mac[6]; int rssi; } ui_bridge_t;
+typedef struct { bool bonded, online; uint8_t mac[6]; int rssi; } ui_link_t;
 
 extern hvac_state_t s_state;
 extern ui_caps_t    s_caps;
-extern ui_bridge_t  s_bridge;
+extern ui_link_t    s_link;
 
 extern lv_obj_t    *s_panel[SCREEN_COUNT];
 extern screen_id_t  s_cur;
@@ -92,8 +92,6 @@ lv_obj_t *mkchip_btn(lv_obj_t *parent, const char *text, uint32_t txt_col,
                      uint32_t solid_bg  , lv_event_cb_t cb,
                      const touch_floor_arg_t *tf);
 
-#define HINT_TURN_TAP   "Turn or tap"
-
 extern bool s_units_c;
 extern int  s_brightness;
 extern bool s_set_editing;
@@ -144,6 +142,25 @@ void anim_bg_opa_exec(void *obj, int32_t v);
 
 void zchip_refresh(void);
 void zchip_pulse(void);
+/* Everything the UI knows about one HVAC mode, one row per hvac_mode_t: the
+ * dial palette, the rim glyph, the mode's own name, the status word shown
+ * while it is running and while it is not, and the SL2 capability bit that
+ * offers it (0 = always offered).  Every site that used to switch on the mode
+ * reads this instead. */
+typedef struct {
+    uint32_t            base;
+    uint32_t            glow;
+    const char         *name;
+    const serin_icon_t *icon;
+    const char         *running;
+    const char         *idle;
+    uint32_t            cap;
+} mode_info_t;
+
+/* Never NULL: a mode outside the enum falls back to the Off row, which is what
+ * the switches' default arms did. */
+const mode_info_t *mode_info(hvac_mode_t m);
+
 uint32_t mode_accent(hvac_mode_t m);
 void mode_pal(hvac_mode_t m, uint32_t *base, uint32_t *glow, const char **label);
 const serin_icon_t *mode_icon(hvac_mode_t m);
@@ -160,6 +177,7 @@ bool airflow_available(void);
 
 void build_menu(void);
 void refresh_menu(void);
+void menu_select_home(void);
 void menu_press(void);
 void menu_turn(int delta);
 void menu_recheck(void);
@@ -180,9 +198,10 @@ void advanced_press(void);
 lv_obj_t *advanced_hold_arc(void);
 float advanced_row_angle(void);
 bool advanced_on_reset_row(void);
+void advanced_land_heatpump(void);
 
-extern lock_state_t s_lock;
-void lock_pill_flash(void);
+extern child_lock_t s_child_lock;
+void child_lock_pill_flash(void);
 
 typedef enum { DIAL_LIVE, DIAL_UNPAIRED, DIAL_LINK_OFF, DIAL_CN105_OFF,
                DIAL_WIFI_OFF } dial_face_t;
@@ -203,17 +222,22 @@ bool batt_snoozed(void);
 
 bool home_face_live(void);
 
-typedef enum { DLG_DISMISS_BATT, DLG_GOTO_SYSTEM, DLG_GOTO_LINK,
+typedef enum { DLG_NONE, DLG_DISMISS_BATT, DLG_GOTO_HEATPUMP, DLG_GOTO_LINK,
                DLG_GOTO_LINK_ROW, DLG_PAIR, DLG_RESET } dlg_action_t;
 
 void alert_dialog_show(uint32_t accent, const char *title, const char *body,
                        const char *primary, dlg_action_t action);
+void info_dialog_show(uint32_t accent, const serin_icon_t *icon,
+                      const char *title, const char *body);
 void alert_dialog_hide(void);
 void offline_dialog_show(dial_face_t face);
 void batt_dialog_show(void);
 void fault_dialog_show(const char *primary);
 void reset_dialog_show(void);
 void dlg_check_close(void);
+/* Runs swap once the panel light has dipped to black, then relights.  False
+ * when Transitions is off or the panel can't dip; make the change at once. */
+bool ui_dip_swap(void (*swap)(void));
 void dlg_close_by_user(int back);
 void dlg_turn(int delta);
 void dlg_press(void);
@@ -222,6 +246,7 @@ bool dlg_resetting(void);
 
 void coach_init(void);
 bool coach_demo_turn(int delta);
+bool coach_demo_tap(int dir);
 bool coach_sandbox_active(void);
 void coach_dismiss(void);
 bool input_quiet(void);

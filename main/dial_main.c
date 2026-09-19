@@ -17,6 +17,8 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 
+static const char *TAG = "dial_main";
+
 static void on_encoder(int delta) { ui_encoder(delta); }
 static void on_button(void)       { ui_button(); }
 static void on_long(void) { ui_button_long(); }
@@ -38,6 +40,10 @@ void app_main(void)
     factory_reset_boot_check();
 
     if (lvgl_port_lock(0)) {
+        /* Before ui_init: the splash fades with the light when it can. */
+#if CONFIG_SERIN_BOARD_VIEWE_15
+        ui_set_on_bright_scale(bsp_backlight_scale);
+#endif
         ui_init();
         ui_set_on_edit(espnow_client_on_local_edit);
         ui_set_on_units(espnow_client_on_units_edit);
@@ -68,6 +74,6 @@ void app_main(void)
     link_ota_init();
     thermal_cal_start();
 
-    ESP_LOGI("boot", "main stack headroom %u bytes",
+    ESP_LOGI(TAG, "main stack headroom %u bytes",
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }

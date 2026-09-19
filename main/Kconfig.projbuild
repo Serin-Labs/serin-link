@@ -23,34 +23,55 @@ config SERIN_BOARD_VIEWE_21
 
 endchoice
 
+# The public symbol and source filenames predate the production sensor choice.
+# Keep them stable so existing sdkconfig overlays continue to work; the fitted
+# carrier sensor is an SHT41.
 config SERIN_SHT40
-    bool "SHT40 temperature/humidity sensor (USB carrier PCB)"
-    default y if SERIN_BOARD_VIEWE_15
-    default n
+    bool "SHT41 temperature/humidity sensor (USB carrier PCB)"
+    default y
     help
-        Read the Sensirion SHT40 on the VIEWE 1.5" USB carrier PCB and offer
-        the dial to the controller as a room-temperature source. Presence is
-        probed at boot -- a dial without the carrier behaves exactly as before.
+        Read the Sensirion SHT41 on the USB carrier PCB and offer the dial to
+        the controller as a room-temperature source. Presence is probed at
+        boot -- a dial without the carrier behaves exactly as before.
         Compiled out entirely when off.
 
+        On for every board in the SERIN_BOARD choice: both carriers fit the
+        sensor. The pins are NOT shared between them, so a board enabling this
+        must also pin SERIN_SHT40_SDA_GPIO/SCL_GPIO -- read their help first.
+
 config SERIN_SHT40_SDA_GPIO
-    int "SHT40 I2C SDA GPIO"
+    int "SHT41 I2C SDA GPIO"
     depends on SERIN_SHT40
+    default -1 if SERIN_BOARD_VIEWE_21
     default 39
     help
-        Carrier CN3 pin 6 -> VIEWE flex pin 5. NOT the CST820 touch bus.
-        GPIO39/40 are the S3's MTCK/MTDO external-JTAG pins; claiming them
+        VIEWE 1.5": carrier CN3 pin 6 -> VIEWE flex pin 5. NOT the CST820 touch
+        bus. GPIO39/40 are the S3's MTCK/MTDO external-JTAG pins; claiming them
         costs external JTAG only (USB Serial/JTAG on 19/20 is untouched).
 
+        VIEWE 2.1": UNTRACED, hence -1. The 1.5" pair must NOT be carried over
+        -- GPIO39 and GPIO40 are both RGB data lines on the 2.1"
+        (RGB_DATA_PINS, main/bsp_viewe21.c), so that pair would put an I2C
+        master on two pins the panel is actively driving. -1 fails
+        i2c_new_master_bus, which sensor_sht40.c already handles: it logs
+        "bring-up failed -- sensor disabled" and the dial runs as if no carrier
+        were fitted. Trace the 2.1" carrier and pin the real pair here before
+        expecting a reading. The free GPIOs on that board are few, and the
+        touch bus (I2C_NUM_0, SCL15/SDA16) is not one of them -- this driver
+        opens its own I2C_NUM_1 and cannot share a pin with another port.
+
 config SERIN_SHT40_SCL_GPIO
-    int "SHT40 I2C SCL GPIO"
+    int "SHT41 I2C SCL GPIO"
     depends on SERIN_SHT40
+    default -1 if SERIN_BOARD_VIEWE_21
     default 40
     help
-        Carrier CN3 pin 7 -> VIEWE flex pin 4.
+        VIEWE 1.5": carrier CN3 pin 7 -> VIEWE flex pin 4.
+
+        VIEWE 2.1": UNTRACED, hence -1. See SERIN_SHT40_SDA_GPIO.
 
 config SERIN_SHT40_RH_GAIN_PPT
-    int "SHT40 self-heating humidity gain (parts per thousand)"
+    int "SHT41 self-heating humidity gain (parts per thousand)"
     depends on SERIN_SHT40
     default 1000
     range 500 2000
@@ -69,7 +90,7 @@ config SERIN_SHT40_RH_GAIN_PPT
         multiplicative model is the right one.
 
 config SERIN_SHT40_OFFSET_CC
-    int "SHT40 self-heating offset (centi-degrees C)"
+    int "SHT41 self-heating offset (centi-degrees C)"
     depends on SERIN_SHT40
     default 0
     range -2000 2000
@@ -85,7 +106,7 @@ config SERIN_SHT40_OFFSET_CC
         NVS value set by the `sensor-offset` console command overrides this.
 
 config SERIN_SHT40_IDLE_OFF_DELTA_CC
-    int "SHT40 offset reduction when Idle screen = Off (centi-degrees C)"
+    int "SHT41 offset reduction when Idle screen = Off (centi-degrees C)"
     depends on SERIN_SHT40
     default 0
     range 0 2000
@@ -102,7 +123,7 @@ config SERIN_SHT40_IDLE_OFF_DELTA_CC
         the measured value.
 
 config SERIN_SHT40_AIRFLOW_DELTA_CC
-    int "SHT40 offset reduction while the unit moves air (centi-degrees C)"
+    int "SHT41 offset reduction while the unit moves air (centi-degrees C)"
     depends on SERIN_SHT40
     default 0
     range 0 2000
@@ -146,13 +167,14 @@ config SERIN_PERF_STATS
 
 config SERIN_LINK_OTA_MANIFEST_URL
     string "Link firmware manifest URL"
-    default "https://github.com/Serin-Labs/serin-link/releases/latest/download/manifest.json"
+    default "https://raw.githubusercontent.com/Serin-Labs/serin-cn105/main/firmware/link/ota/stable/manifest.json"
     help
         Fetched over HTTPS when the user runs the update check from
         Settings -> System. Each build's `path` in the manifest is resolved
-        relative to this URL's directory, so a manifest published as a GitHub
-        release asset sends the dial to link15-app.bin beside it. Asset names
-        are flat because a release asset name cannot contain '/'.
+        relative to this URL's directory. Signed plaintext images are served
+        from the public serin-cn105 distribution repo under link/ota/stable/.
+        Legacy encrypted feeds at link/manifest.json are a different format
+        and must not be used by this firmware.
 
         This is only the built-in default. The `ota-url` console command
         overrides it per channel in NVS, so a dial can be pointed at a
@@ -164,13 +186,12 @@ config SERIN_LINK_OTA_MANIFEST_URL
 
 config SERIN_LINK_OTA_MANIFEST_BETA_URL
     string "Link beta-channel manifest URL (empty = no beta channel)"
-    default "https://github.com/Serin-Labs/serin-link/releases/download/beta/manifest.json"
+    default "https://raw.githubusercontent.com/Serin-Labs/serin-cn105/main/firmware/link/ota/beta/manifest.json"
     help
-        Same shape as the stable manifest, on a separate rolling `beta`
-        release; published by `tools/publish_fw.py --channel beta`. That
-        release must stay flagged as a GitHub pre-release -- published as a
-        normal release it becomes `latest`, and every dial on the stable
-        channel would silently start taking beta builds. Used instead of the stable URL
+        Same signed plaintext format as stable, under link/ota/beta/ in the
+        public distribution repo. Stage with tools/publish_fw.py --channel beta
+        --distribution <serin-cn105 checkout>. Stable and beta have separate
+        directories. Used instead of the stable URL
         while the NVS pref `ota_beta` is set (console: `ota-channel beta`),
         mirroring the controller's opt-in beta toggle. Leave empty to compile
         the channel out: `ota-channel beta` is then refused.
@@ -245,7 +266,7 @@ config SERIN_CAL_WIFI_PSK
 config SERIN_CAL_LOAD_URL
     string "URL fetched in a loop for the sustained-radio regime"
     depends on SERIN_THERMAL_CAL
-    default "https://github.com/Serin-Labs/serin-link/releases/latest/download/manifest.json"
+    default "https://raw.githubusercontent.com/Serin-Labs/serin-cn105/main/firmware/link/ota/stable/manifest.json"
     help
         Thermal calibration build setting.
 

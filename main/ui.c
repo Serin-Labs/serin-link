@@ -49,7 +49,7 @@ static bool s_night_lift = false;
 #if !CONFIG_SERIN_BOARD_VIEWE_21
 static void bright_exec_cb(void *var, int32_t v);
 #endif
-lock_state_t        s_lock;
+child_lock_t        s_child_lock;
 bool         s_units_c = false;
 ui_caps_t s_caps = {
     .modes        = 0x0077,
@@ -102,7 +102,7 @@ static struct { lv_obj_t *arc, *roomDot, *setDot, *pill, *status, *num, *numHalf
                          *zchip, *zname, *airbtn,
                          *bandLo, *bandLoHalf, *bandHi, *bandHiHalf,
                          *bandSep, *bandRing, *bandTapL, *bandTapR, *setDot2; } T;
-ui_bridge_t s_bridge;
+ui_link_t s_link;
 ui_zone_info_t s_zinfo[UI_MAX_ZONES];
 int  s_zn_ui, s_zactive;
 static void (*s_on_zone_select)(int);
@@ -124,18 +124,18 @@ static bool s_cal_owned;
 static bool s_cal_writing;
 #endif
 
-void ui_set_bridge_link(bool bonded, bool online, const uint8_t mac[6], int rssi)
+void ui_set_link_state(bool bonded, bool online, const uint8_t mac[6], int rssi)
 {
 #if CONFIG_SERIN_THERMAL_CAL
     if (s_cal_owned && !s_cal_writing) return;
 #endif
-    bool same = s_bridge.bonded == bonded && s_bridge.online == online &&
-                s_bridge.rssi == rssi && (!mac || memcmp(s_bridge.mac, mac, 6) == 0);
+    bool same = s_link.bonded == bonded && s_link.online == online &&
+                s_link.rssi == rssi && (!mac || memcmp(s_link.mac, mac, 6) == 0);
     if (same) return;
-    s_bridge.bonded = bonded;
-    s_bridge.online = online;
-    if (mac) memcpy(s_bridge.mac, mac, 6);
-    s_bridge.rssi = rssi;
+    s_link.bonded = bonded;
+    s_link.online = online;
+    if (mac) memcpy(s_link.mac, mac, 6);
+    s_link.rssi = rssi;
     dlg_check_close();
     if (s_cur == SCREEN_SETTINGS && !s_hold_timer) refresh_settings();
 }
@@ -297,7 +297,7 @@ static void lock_pill_hide_cb(lv_timer_t *t)
     if (s_cur == SCREEN_THERMOSTAT) refresh_thermostat();
 }
 
-void lock_pill_flash(void)
+void child_lock_pill_flash(void)
 {
     if (!T.lockPill) return;
     lv_obj_add_flag(T.pill, LV_OBJ_FLAG_HIDDEN);
@@ -325,6 +325,117 @@ static inline bool dim_visible(void)
 static void refresh_thermostat(void);
 static void refresh_cur_screen(void);
 
+/* Brightness dip.  On an emissive panel the light itself can fade: dim to
+ * black, make the change in the dark, and relight once the new frame has
+ * reached the panel.  Only the light changes during the ramps, so they cost
+ * no redraws.  The ramp runs on its own short timer because LVGL's animation
+ * timer only ticks at the refresh period.  Everything queued with dip_swap
+ * runs at the same dark point, so a dialog closing into a new screen, or a
+ * screen change followed by sleep, shares one dip. */
+#define DIP_TICK_MS   8
+#define DIP_SWAPS     4
+#define SLEEP_FADE_MS 300
+static void (*s_on_bright_scale)(uint8_t);
+void ui_set_on_bright_scale(void (*cb)(uint8_t)) { s_on_bright_scale = cb; }
+
+static uint32_t s_dip_out_ms = UI_DIP_OUT_MS, s_dip_in_ms = UI_DIP_IN_MS;
+void ui_dip_ms_set(uint32_t out_ms, uint32_t in_ms) { s_dip_out_ms = out_ms; s_dip_in_ms = in_ms; }
+void ui_dip_ms_get(uint32_t *out_ms, uint32_t *in_ms) { *out_ms = s_dip_out_ms; *in_ms = s_dip_in_ms; }
+
+static lv_timer_t *s_dip_timer;
+static uint32_t    s_dip_t0, s_dip_ms, s_dip_relight_ms;
+static uint8_t     s_dip_from, s_dip_to, s_dip_cur = 255;
+static void      (*s_dip_done)(void);
+static void      (*s_dip_relight_done)(void);
+static bool        s_dip_run, s_dip_relight;
+static void      (*s_dip_swap[DIP_SWAPS])(void);
+static lv_obj_t   *s_splash;
+
+static void dip_tick(lv_timer_t *t)
+{
+    (void)t;
+    uint32_t el = lv_tick_elaps(s_dip_t0);
+    if (el >= s_dip_ms) {
+        s_dip_cur = s_dip_to;
+        s_on_bright_scale(s_dip_cur);
+        lv_timer_pause(s_dip_timer);
+        s_dip_run = false;
+        void (*done)(void) = s_dip_done;
+        s_dip_done = NULL;
+        if (done) done();
+        return;
+    }
+    s_dip_cur = (uint8_t)(s_dip_from + ((int)s_dip_to - s_dip_from) * (int)el / (int)s_dip_ms);
+    s_on_bright_scale(s_dip_cur);
+}
+
+static void dip_start(uint8_t to, uint32_t ms, void (*done)(void))
+{
+    s_dip_relight = false;
+    if (!s_dip_timer) s_dip_timer = lv_timer_create(dip_tick, DIP_TICK_MS, NULL);
+    s_dip_from = s_dip_cur;
+    s_dip_to   = to;
+    s_dip_ms   = ms ? ms : 1;
+    s_dip_done = done;
+    s_dip_run  = true;
+    s_dip_t0   = lv_tick_get();
+    lv_timer_resume(s_dip_timer);
+    lv_timer_reset(s_dip_timer);
+}
+
+static void dip_refr_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_dip_relight) return;
+    dip_start(255, s_dip_relight_ms, s_dip_relight_done);
+}
+
+static void dip_relight_after_frame(uint32_t ms, void (*done)(void))
+{
+    static bool hooked;
+    if (!hooked) {
+        lv_display_add_event_cb(lv_display_get_default(), dip_refr_ready_cb,
+                                LV_EVENT_REFR_READY, NULL);
+        hooked = true;
+    }
+    s_dip_relight_ms   = ms;
+    s_dip_relight_done = done;
+    s_dip_relight      = true;
+}
+
+static void dip_dark(void)
+{
+    void (*run[DIP_SWAPS])(void);
+    memcpy(run, s_dip_swap, sizeof run);
+    memset(s_dip_swap, 0, sizeof s_dip_swap);
+    for (int i = 0; i < DIP_SWAPS; i++)
+        if (run[i]) run[i]();
+    if (s_dip_run) return;   /* a swap queued another dip */
+    if (s_disp_asleep) {
+        /* The panel is off; restore the scale so wake starts from it. */
+        s_dip_cur = 255;
+        s_on_bright_scale(255);
+    } else {
+        dip_relight_after_frame(s_dip_in_ms, NULL);
+    }
+}
+
+/* Queues swap to run once the light is at 0.  False when there is no light
+ * to dip (sim, 2.1), the splash owns the light, or the queue is full; the
+ * caller then makes its change at once. */
+static bool dip_swap(void (*swap)(void), uint32_t out_ms)
+{
+    if (!s_on_bright_scale || s_splash) return false;
+    int i = 0;
+    while (i < DIP_SWAPS && s_dip_swap[i] && s_dip_swap[i] != swap) i++;
+    if (i == DIP_SWAPS) return false;
+    s_dip_swap[i] = swap;
+    if (!(s_dip_run && s_dip_to == 0)) dip_start(0, out_ms, dip_dark);
+    return true;
+}
+
+bool ui_dip_swap(void (*swap)(void)) { return s_anim_en && dip_swap(swap, s_dip_out_ms); }
+
 static void glance_exit(void)
 {
     if (!s_glancing) return;
@@ -332,12 +443,17 @@ static void glance_exit(void)
     if (s_cur == SCREEN_THERMOSTAT) refresh_thermostat();
 }
 
+static void sleep_dark(void)
+{
+    if (s_disp_asleep && s_on_disp_sleep) s_on_disp_sleep(true);
+}
+
 static void disp_sleep(void)
 {
     if (s_disp_asleep) return;
     s_disp_asleep = true;
     home_stop_alert_rim();
-    if (s_on_disp_sleep) s_on_disp_sleep(true);
+    if (!dip_swap(sleep_dark, SLEEP_FADE_MS)) sleep_dark();
 }
 
 static void disp_wake(void)
@@ -382,17 +498,17 @@ static void idle_timer_cb(lv_timer_t *t)
     if (s_cal_owned) return;
 #endif
     uint32_t idle = lv_display_get_inactive_time(NULL);
-    bool may_dim = s_bridge.bonded ? (s_pair_state != PAIR_UI_SEARCHING)
-                                   : (s_pair_state == PAIR_UI_HIDDEN);
+    bool may_dim = s_link.bonded ? (s_pair_state != PAIR_UI_SEARCHING)
+                                 : (s_pair_state == PAIR_UI_HIDDEN);
     idle_set_dim(may_dim && idle >= IDLE_DIM_MS);
 
-    if (idle >= IDLE_DIM_MS) lock_note_idle(&s_lock);
+    if (idle >= IDLE_DIM_MS) child_lock_note_idle(&s_child_lock);
 
     bool gate_off    = s_screen_gate == UI_SCREEN_GATE_OFF;
     bool sleep_stage = gate_off ||
                        (s_screen_gate == UI_SCREEN_GATE_NONE && s_idle_off);
     uint32_t stage_ms = gate_off ? IDLE_DIM_MS : IDLE_GLANCE_MS;
-    if (s_bridge.bonded && !s_glancing && !s_disp_asleep && idle >= stage_ms
+    if (s_link.bonded && !s_glancing && !s_disp_asleep && idle >= stage_ms
         && s_pair_state == PAIR_UI_HIDDEN
         && !s_hold_timer) {
         if (dlg_is_open()) alert_dialog_hide();
@@ -434,53 +550,39 @@ void ui_set_night(bool night, uint8_t ceil_pct)
 }
 bool ui_night_active(void)    { return s_night && s_night_en; }
 
+/*                     base            glow            name         icon         running      idle         cap                       */
+static const mode_info_t MODE_INFO[] = {
+    [MODE_OFF]       = { COL_OFF_BASE,  COL_OFF_GLOW,  "Off",       &mode_off,  "On",        "On",        0                        },
+    [MODE_HEAT]      = { COL_HEAT_BASE, COL_HEAT_GLOW, "Heat",      &mode_heat, "Heating",   "Heat",      1u << SL2_MODE_HEAT      },
+    [MODE_COOL]      = { COL_COOL_BASE, COL_COOL_GLOW, "Cool",      &mode_cool, "Cooling",   "Cool",      1u << SL2_MODE_COOL      },
+    [MODE_HEAT_COOL] = { COL_AUTO_BASE, COL_AUTO_GLOW, "Heat/Cool", &mode_auto, "Heat/Cool", "Heat/Cool", 1u << SL2_MODE_HEAT_COOL },
+    [MODE_AUTO]      = { COL_AUTO_BASE, COL_AUTO_GLOW, "Auto",      &mode_auto, "Auto",      "Auto",      1u << SL2_MODE_AUTO      },
+    [MODE_DRY]       = { COL_DRY_BASE,  COL_DRY_GLOW,  "Dry",       &mode_dry,  "Drying",    "Dry",       1u << SL2_MODE_DRY       },
+    [MODE_FAN]       = { COL_FAN_BASE,  COL_FAN_GLOW,  "Fan",       &mode_fan,  "Fan",       "Fan",       1u << SL2_MODE_FAN_ONLY  },
+};
+
+const mode_info_t *mode_info(hvac_mode_t m)
+{
+    return &MODE_INFO[(unsigned)m <= MODE_FAN ? (unsigned)m : (unsigned)MODE_OFF];
+}
+
 void mode_pal(hvac_mode_t m, uint32_t *base, uint32_t *glow, const char **label)
 {
-    switch (m) {
-        case MODE_HEAT: *base = COL_HEAT_BASE; *glow = COL_HEAT_GLOW; *label = "Heat"; break;
-        case MODE_COOL: *base = COL_COOL_BASE; *glow = COL_COOL_GLOW; *label = "Cool"; break;
-        case MODE_HEAT_COOL:
-                        *base = COL_AUTO_BASE; *glow = COL_AUTO_GLOW; *label = "Auto"; break;
-        case MODE_AUTO: *base = COL_AUTO_BASE; *glow = COL_AUTO_GLOW; *label = "Auto"; break;
-        case MODE_DRY:  *base = COL_DRY_BASE;  *glow = COL_DRY_GLOW;  *label = "Dry";  break;
-        case MODE_FAN:  *base = COL_FAN_BASE;  *glow = COL_FAN_GLOW;  *label = "Fan";  break;
-        default:        *base = COL_OFF_BASE;  *glow = COL_OFF_GLOW;  *label = "Off";  break;
-    }
+    const mode_info_t *r = mode_info(m);
+    *base = r->base; *glow = r->glow; *label = r->name;
 }
 uint32_t mode_accent(hvac_mode_t m)
 {
-    uint32_t b, g; const char *l; mode_pal(m, &b, &g, &l);
-    return (m == MODE_OFF) ? COL_GREY : g;
+    return (m == MODE_OFF) ? COL_GREY : mode_info(m)->glow;
 }
 
-const serin_icon_t *mode_icon(hvac_mode_t m)
-{
-    switch (m) {
-        case MODE_HEAT: return &mode_heat; case MODE_COOL: return &mode_cool;
-        case MODE_HEAT_COOL: return &mode_auto;
-        case MODE_AUTO: return &mode_auto; case MODE_DRY:  return &mode_dry;
-        case MODE_FAN:  return &mode_fan;  default:        return &mode_off;
-    }
-}
+const serin_icon_t *mode_icon(hvac_mode_t m) { return mode_info(m)->icon; }
 
 const char *status_text(const hvac_state_t *s, bool active, bool off)
 {
     if (off) return "Off";
-    if (active) {
-        switch (s->mode) {
-            case MODE_HEAT: return "Heating"; case MODE_COOL: return "Cooling";
-            case MODE_DRY:  return "Drying";  case MODE_FAN:  return "Fan";
-            case MODE_AUTO: return "Auto";
-            case MODE_HEAT_COOL: return "Auto";
-            default: return "On";
-        }
-    }
-    switch (s->mode) {
-        case MODE_HEAT: return "Heat"; case MODE_COOL: return "Cool";
-        case MODE_DRY:  return "Dry";  case MODE_FAN:  return "Fan";
-        case MODE_AUTO: return "Auto"; case MODE_HEAT_COOL: return "Auto";
-        default: return "On";
-    }
+    const mode_info_t *r = mode_info(s->mode);
+    return active ? r->running : r->idle;
 }
 
 #define SPLASH_FADE_MS   400
@@ -492,14 +594,34 @@ static void splash_opa_cb(void *var, int32_t v)
 {
     lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
 }
-static void splash_done_cb(lv_anim_t *a)
+static void splash_finish(void)
 {
-    lv_obj_delete(lv_obj_get_parent((lv_obj_t *)a->var));
+    lv_obj_delete(s_splash);
+    s_splash = NULL;
     coach_init();
 }
+static void splash_done_cb(lv_anim_t *a) { (void)a; splash_finish(); }
+
+/* On a dimmable panel the logo is drawn once and the light does the fading. */
+static void splash_dark(void)
+{
+    splash_finish();
+    dip_relight_after_frame(SPLASH_FADE_MS, NULL);
+}
+static void splash_dim_cb(lv_timer_t *t)
+{
+    (void)t;
+    dip_start(0, SPLASH_FADE_MS, splash_dark);
+}
+static void splash_lit(void)
+{
+    lv_timer_t *t = lv_timer_create(splash_dim_cb, SPLASH_HOLD_MS, NULL);
+    lv_timer_set_repeat_count(t, 1);
+}
+
 static void splash_show(void)
 {
-    lv_obj_t *ov = lv_obj_create(lv_layer_top());
+    lv_obj_t *ov = s_splash = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(ov);
     lv_obj_set_size(ov, SERIN_DISP, SERIN_DISP);
     lv_obj_set_style_bg_opa(ov, LV_OPA_COVER, 0);
@@ -514,12 +636,19 @@ static void splash_show(void)
     lv_obj_set_flex_align(grp, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(grp, SERIN_PX(SPLASH_GAP), 0);
     lv_obj_center(grp);
-    lv_obj_set_style_opa(grp, LV_OPA_TRANSP, 0);
 
     mkicon(grp, &serin_logo, SERIN_PX(SPLASH_LOGO_PX), COL_SPLASH_LOGO);
     lv_obj_t *word = mklabel(grp, FONT_SET_NAME, COL_SPLASH_WORD, "serin labs");
     lv_obj_set_style_text_letter_space(word, SERIN_PX(1), 0);
 
+    if (s_on_bright_scale) {
+        s_dip_cur = 0;
+        s_on_bright_scale(0);
+        dip_relight_after_frame(SPLASH_FADE_MS, splash_lit);
+        return;
+    }
+
+    lv_obj_set_style_opa(grp, LV_OPA_TRANSP, 0);
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, grp);
@@ -883,14 +1012,14 @@ static bool swipe_gate_open(void)
 
 static bool lock_gates(void)
 {
-    return s_cur == SCREEN_THERMOSTAT && lock_engaged(&s_lock) &&
+    return s_cur == SCREEN_THERMOSTAT && child_lock_engaged(&s_child_lock) &&
            thermo_face() == DIAL_LIVE;
 }
 
 static bool lock_refuse(void)
 {
     if (!lock_gates()) return false;
-    lock_pill_flash();
+    child_lock_pill_flash();
     return true;
 }
 
@@ -1276,7 +1405,7 @@ static dial_face_t thermo_face(void)
 {
     const hvac_state_t *s = &s_state;
     if (s_pair_state != PAIR_UI_HIDDEN) return DIAL_UNPAIRED;
-    if (!s_bridge.bonded)          return DIAL_UNPAIRED;
+    if (!s_link.bonded)            return DIAL_UNPAIRED;
     if (s->alert == ALERT_NOLINK)  return DIAL_LINK_OFF;
     if (s->alert == ALERT_NONE && s->wifi_setup_avail && !s->wifi_provisioned &&
         !s_wifi_dismissed[s_zactive])
@@ -1361,10 +1490,11 @@ static void refresh_blank_offline(dial_face_t face)
     const char *label; uint32_t col;
     bool alertBadge;
     bool breathe;
+    /* Copy convention: alert chips and takeovers are ALL CAPS; titles are sentence case. */
     switch (face) {
         case DIAL_LINK_OFF:  label = "LINK\nOFFLINE";  col = COL_ALERT_NOLINK;    alertBadge = true;  breathe = false; break;
         case DIAL_CN105_OFF: label = "HEAT PUMP\nOFFLINE"; col = COL_ALERT_WARN;  alertBadge = true;  breathe = true;  break;
-        default:             label = "Set up WiFi";  col = SET_COL[SET_WIFI];   alertBadge = true;  breathe = true;  break;
+        default:             label = "Set up Wi-Fi";  col = SET_COL[SET_WIFI];   alertBadge = true;  breathe = true;  break;
     }
     pair_badge(face == DIAL_WIFI_OFF ? &hero_hotspot : &hero_alert,
                face == DIAL_WIFI_OFF ? 80 : 32, col);
@@ -1423,7 +1553,7 @@ static void refresh_pairing_face(void)
         lv_obj_remove_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
         btn1 = "Retry";
-        back = s_bridge.bonded;
+        back = s_link.bonded;
         cta  = false;
     } else if (full) {
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
@@ -1435,7 +1565,7 @@ static void refresh_pairing_face(void)
         back = true;
     } else if (mismatch) {
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
-        pair_badge(&set_bridge, 60, COL_ALERT_NOLINK);
+        pair_badge(&set_link_row, 60, COL_ALERT_NOLINK);
         lv_label_set_text(T.pairTitle, "Controller reset");
         lv_label_set_text(T.pairInstr,
             "The Serin controller was reset. Forget its zone, then pair again.");
@@ -1448,8 +1578,8 @@ static void refresh_pairing_face(void)
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(T.pairTitle, "Pairing");
         lv_label_set_text(T.pairInstr,
-            "To start pairing mode on the Serin controller, "
-            "press its button once.");
+            "Keep the controller's pairing window open "
+            "until this finishes.");
         lv_obj_remove_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         pair_hint_paint();
         lv_obj_remove_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
@@ -1459,8 +1589,7 @@ static void refresh_pairing_face(void)
         lv_obj_remove_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(T.pairTitle, "Ready to pair");
         lv_label_set_text(T.pairInstr,
-            "Tap to enter pairing mode, then put the "
-            "Serin controller in pairing mode.");
+            "Open pairing on the controller, then tap Pair.");
         lv_obj_remove_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
         btn1 = "Pair";
@@ -1684,7 +1813,7 @@ static void refresh_thermostat(void)
 
 static void pair_hint_paint(void)
 {
-    if (s_pair_ch) lv_label_set_text_fmt(T.pairHint, "Ch %u \xC2\xB7 0:%02d", s_pair_ch, s_pair_left);
+    if (s_pair_ch) lv_label_set_text_fmt(T.pairHint, "0:%02d", s_pair_left);
     else           lv_label_set_text_fmt(T.pairHint, "Searching \xC2\xB7 0:%02d", s_pair_left);
 }
 
@@ -1705,13 +1834,13 @@ static hold_id_t s_hold_target = HOLD_NONE;
 static bool link_unpair_armed(void)
 {
     return s_cur == SCREEN_SETTINGS && s_set_sel == SET_LINK &&
-           s_bridge.bonded && s_pair_state == PAIR_UI_HIDDEN &&
+           s_link.bonded && s_pair_state == PAIR_UI_HIDDEN &&
            s_ota_st == OTA_UI_HIDDEN;
 }
 
 static bool wifi_change_ready(void)
 {
-    return s_bridge.online && s_state.wifi_setup_avail &&
+    return s_link.online && s_state.wifi_setup_avail &&
            s_state.wifi_provisioned && s_state.wifi_connected &&
            (s_caps.features & SL2_FEAT_WIFI_SETUP) &&
            s_pair_state == PAIR_UI_HIDDEN && s_ota_st == OTA_UI_HIDDEN;
@@ -1729,7 +1858,7 @@ static bool wifi_skip_armed(void)
 
 static void hold_link_complete(void)
 {
-    settings_set_link_text("Unpairing...");
+    settings_set_link_text("Unpairing\xE2\x80\xA6");
     if (s_on_forget) s_on_forget();
 }
 
@@ -1742,7 +1871,7 @@ static void wifi_skip_complete(void)
 static bool lock_unlock_armed(void)   { return lock_gates(); }
 static void lock_unlock_complete(void)
 {
-    lock_open_window(&s_lock);
+    child_lock_open_window(&s_child_lock);
     refresh_thermostat();
     uig_eat_click(s_dial_gest);
 }
@@ -1857,7 +1986,7 @@ void ui_set_pairing(pair_ui_t state, uint8_t channel)
     if (state == PAIR_UI_PROMPT) {
         s_pair_state = PAIR_UI_HIDDEN;
         if (s_pair_cd) { lv_timer_delete(s_pair_cd); s_pair_cd = NULL; }
-        if (s_bridge.bonded) { pair_dismiss(); return; }
+        if (s_link.bonded) { pair_dismiss(); return; }
         ui_show_screen(SCREEN_THERMOSTAT);
         return;
     }
@@ -1916,10 +2045,14 @@ typedef struct {
     void (*opened)(void);
     void (*caps_changed)(void);
     bool lazy;
+    /* A wizard or a progress readout: reachable, but never somewhere Back
+     * should land, because the run that put it on screen is over. */
+    bool transient;
 } screen_ops_t;
 
 static void thermo_turn(int delta)
 {
+    if (coach_demo_turn(delta)) return;
     if (thermo_face() != DIAL_LIVE) return;
     if (lock_refuse()) return;
     if (s_state.alert == ALERT_SYNCING)
@@ -1970,14 +2103,16 @@ static const screen_ops_t SCREEN_OPS[SCREEN_COUNT] = {
                             .enter = settings_enter, .refresh = refresh_settings ,
                             .caps_changed = settings_caps_changed },
     [SCREEN_UPDATE]     = { .press = ota_action,   .hold = update_hold,
-                            .build = build_update, .refresh = refresh_update },
+                            .build = build_update, .refresh = refresh_update,
+                            .transient = true },
     [SCREEN_ABOUT]      = { .turn = about_turn,    .press = about_press,
                             .build = build_about,  .destroy = about_destroy,
                             .enter = about_enter,  .refresh = refresh_about ,
                             .caps_changed = about_caps_changed, .lazy = true },
     [SCREEN_WIFI]       = { .turn = wifi_encoder,  .press = wifi_press,     .hold = wifi_back,
                             .build = build_wifi,   .destroy = wifi_destroy,
-                            .refresh = refresh_wifi, .lazy = true },
+                            .refresh = refresh_wifi, .caps_changed = refresh_wifi,
+                            .lazy = true, .transient = true },
     [SCREEN_ZONES]      = { .turn = zones_turn,    .press = zones_commit,
                             .can_enter = zones_can_enter,
                             .build = build_zones,
@@ -2034,10 +2169,46 @@ static void leaver_settle(void)
     }
     if (s_arriver_id == s_cur && s_panel[s_cur]) {
         lv_obj_remove_flag(s_panel[s_cur], LV_OBJ_FLAG_HIDDEN);
-        ui_fade_in(s_panel[s_cur], UI_FADE_MS);
+        if (!s_on_bright_scale) ui_fade_in(s_panel[s_cur], UI_FADE_MS);
     }
 }
 static void leaver_done_cb(lv_anim_t *a) { (void)a; leaver_settle(); }
+
+/* Where Back goes.  The thermostat is the root, so arriving there empties the
+ * trail; arriving anywhere already on it rewinds to that point instead of
+ * stacking a second copy.  Everything else is one step deeper than its
+ * opener, which is what lets Mode and Airflow return to the Menu when the
+ * Menu is how the user got there and to Home when it isn't. */
+#define BACK_MAX 6
+static screen_id_t s_back[BACK_MAX];
+static int         s_back_n = 0;
+
+static void back_note(screen_id_t id, screen_id_t prev)
+{
+    if (id == SCREEN_THERMOSTAT) { s_back_n = 0; return; }
+    for (int i = 0; i < s_back_n; i++)
+        if (s_back[i] == id) { s_back_n = i; return; }
+    if (id == prev || SCREEN_OPS[prev].transient) return;
+    if (s_back_n == BACK_MAX) {
+        memmove(s_back, s_back + 1, sizeof s_back - sizeof s_back[0]);
+        s_back_n--;
+    }
+    s_back[s_back_n++] = prev;
+}
+
+/* A screen can lose the capability that made it reachable while it sits on the
+ * trail, so skip anything that would now refuse to open.  ui_show_screen
+ * rewinds the trail to whatever this picks, which drops the skipped entries. */
+screen_id_t ui_back_target(void)
+{
+    for (int i = s_back_n - 1; i >= 0; i--) {
+        const screen_ops_t *op = &SCREEN_OPS[s_back[i]];
+        if (!op->can_enter || op->can_enter()) return s_back[i];
+    }
+    return SCREEN_THERMOSTAT;
+}
+
+void ui_back(void) { ui_show_screen(ui_back_target()); }
 
 void ui_show_screen(screen_id_t id)
 {
@@ -2045,6 +2216,7 @@ void ui_show_screen(screen_id_t id)
     const screen_ops_t *op = &SCREEN_OPS[id];
 
     if (op->can_enter && !op->can_enter()) return;
+    back_note(id, s_cur);
     leaver_settle();
     if (id != s_cur && s_hold_timer) hold_cancel();
     if (op->build && !s_panel[id]) op->build();
@@ -2059,12 +2231,16 @@ void ui_show_screen(screen_id_t id)
     }
     s_cur = id;
 
+    if (prev == SCREEN_THERMOSTAT && id == SCREEN_MENU) menu_select_home();
     if (op->enter)   op->enter();
     if (op->refresh) op->refresh();
     lv_obj_set_style_opa(s_panel[id], LV_OPA_COVER, 0);
     if (fade) {
+        /* A lazy screen was just built visible, on top of the leaver. */
+        lv_obj_add_flag(s_panel[id], LV_OBJ_FLAG_HIDDEN);
         s_leaver = s_panel[prev]; s_leaver_id = prev; s_arriver_id = id;
-        ui_fade_out(s_leaver, UI_FADE_OUT_MS, leaver_done_cb);
+        if (s_on_bright_scale) { if (!dip_swap(leaver_settle, s_dip_out_ms)) leaver_settle(); }
+        else ui_fade_out(s_leaver, UI_FADE_OUT_MS, leaver_done_cb);
     } else {
         lv_obj_remove_flag(s_panel[id], LV_OBJ_FLAG_HIDDEN);
         if (prev != id && SCREEN_OPS[prev].lazy) {
@@ -2121,12 +2297,32 @@ void ui_button_long(void)
     else                        ui_show_screen(SCREEN_THERMOSTAT);
 }
 
+/* A plain tap on the home face: the outer SERIN_SIDE_TAP_PCT of the width on
+ * either side steps the setpoint (left down, right up) exactly as one knob
+ * click would; anything else falls through to the knob press (Menu). */
+static bool home_side_tap(void)
+{
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return false;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+    int edge = SERIN_DISP * SERIN_SIDE_TAP_PCT / 100;
+    int dir  = pt.x < edge ? -1 : pt.x >= SERIN_DISP - edge ? +1 : 0;
+    if (!dir) return false;
+    note_activity();
+    if (!coach_demo_tap(dir)) thermo_turn(dir);
+    return true;
+}
+
 static void panel_click_cb(lv_event_t *e)
 {
     if (lv_event_get_target(e) != lv_event_get_current_target(e)) return;
 
-    if (s_dial_gest && lv_event_get_target(e) == s_panel[SCREEN_THERMOSTAT]
-        && !uig_click_is_tap(s_dial_gest)) return;
+    if (s_dial_gest && lv_event_get_target(e) == s_panel[SCREEN_THERMOSTAT]) {
+        if (!uig_click_is_tap(s_dial_gest)) return;
+        if (dlg_is_open() || s_glancing || s_disp_asleep) { ui_button(); return; }
+        if (home_side_tap()) return;
+    }
     ui_button();
 }
 
@@ -2157,10 +2353,10 @@ static void alert_click_cb(lv_event_t *e)
     }
     if (s_state.alert != ALERT_PENDING && s_state.alert != ALERT_FAULT) return;
     if (s_state.alert == ALERT_PENDING) {
-        alert_dialog_show(COL_ALERT_WARN, "Change Pending",
+        alert_dialog_show(COL_ALERT_WARN, "Change pending",
             "Your change was sent to the heat pump and is waiting to be "
             "confirmed. This usually takes a few seconds.",
-            "Open Settings", DLG_GOTO_SYSTEM);
+            "Open Settings", DLG_GOTO_HEATPUMP);
     } else {
         fault_dialog_show("Open Settings");
     }
@@ -2181,8 +2377,8 @@ static void pair_dismiss(void)
 void begin_pairing(void)
 {
     if (s_pair_state == PAIR_UI_HIDDEN ||
-        (!s_bridge.bonded && s_pair_state == PAIR_UI_FAIL)) pair_retry();
-    else                                                    pair_dismiss();
+        (!s_link.bonded && s_pair_state == PAIR_UI_FAIL)) pair_retry();
+    else                                                  pair_dismiss();
 }
 
 static void pair_face_press(void)
@@ -2266,8 +2462,8 @@ int  ui_hold_arc_shown(void) {
 int  ui_settings_sel(void) { return s_set_sel; }
 bool ui_units_c(void)      { return s_units_c; }
 
-int  ui_lock_enabled(void) { return s_lock.enabled ? 1 : 0; }
-int  ui_lock_window(void)  { return s_lock.window_open ? 1 : 0; }
+int  ui_child_lock_enabled(void)     { return s_child_lock.enabled ? 1 : 0; }
+int  ui_child_lock_window_open(void) { return s_child_lock.window_open ? 1 : 0; }
 
 void ui_idle_off_set(bool off)
 {
@@ -2307,7 +2503,7 @@ void ui_init(void)
     s_night_en = prefs_get_u8("night_en", 1) != 0;
     s_anim_en  = prefs_get_u8("anim_en", 0) != 0;
     sensor_sht40_set_idle_off(s_idle_off);
-    lock_init(&s_lock, prefs_get_u8("lk_en", 0) != 0);
+    child_lock_init(&s_child_lock, prefs_get_u8("lk_en", 0) != 0);
     for (int i = 0; i < SCREEN_COUNT; i++)
         if (!SCREEN_OPS[i].lazy && SCREEN_OPS[i].build) SCREEN_OPS[i].build();
 
@@ -2421,7 +2617,7 @@ void ui_cal_face(ui_cal_face_t f)
     }
 
     s_cal_writing = true;
-    ui_set_bridge_link(bonded, bonded, NULL, -50);
+    ui_set_link_state(bonded, bonded, NULL, -50);
     ui_set_state(&st);
     s_cal_writing = false;
 
@@ -2436,7 +2632,7 @@ void zchip_refresh(void)
     dial_face_t f = thermo_face();
     bool faceOk = !face_is_blank(f) ||
                   f == DIAL_LINK_OFF || f == DIAL_CN105_OFF;
-    bool show = faceOk && (s_zn_ui >= 2) && s_bridge.bonded && !s_glancing &&
+    bool show = faceOk && (s_zn_ui >= 2) && s_link.bonded && !s_glancing &&
                 lv_obj_has_flag(T.alert, LV_OBJ_FLAG_HIDDEN);
     if (!show) {
         lv_obj_add_flag(T.zchip, LV_OBJ_FLAG_HIDDEN);

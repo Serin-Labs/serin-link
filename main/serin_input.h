@@ -17,6 +17,13 @@
 
 #define SERIN_FBAR_ENGAGE_PX     10
 
+/* Airflow vane tiles: finger travel per vane position once a drag engages. */
+#define SERIN_VANE_STEP_PX       36
+
+/* Home screen: a tap in the outer SERIN_SIDE_TAP_PCT percent of the width on
+ * either side steps the setpoint one increment; the middle opens the Menu. */
+#define SERIN_SIDE_TAP_PCT       30
+
 #define SERIN_SWIPE_MIN_PX       60
 #define SERIN_SWIPE_WINDOW_MS   150
 #define SERIN_SWIPE_DOM           2

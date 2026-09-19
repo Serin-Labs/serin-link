@@ -130,12 +130,17 @@ const char *ui_dial_face(void);
 int         ui_settings_sel(void);
 int         ui_adv_sel(void);
 bool        ui_units_c(void);
-int         ui_lock_enabled(void);
-int         ui_lock_window(void);
+int         ui_child_lock_enabled(void);
+int         ui_child_lock_window_open(void);
 bool        ui_adv_editing_units(void);
 const char *ui_dlg_state(void);
 
 void        ui_show_screen(screen_id_t id);
+/* Retrace one step of the trail ui_show_screen keeps, so a Back control lands
+ * on whichever screen opened this one and falls through to the thermostat
+ * when nothing did. */
+void        ui_back(void);
+screen_id_t ui_back_target(void);
 screen_id_t ui_current_screen(void);
 
 void        ui_encoder(int delta);
@@ -145,6 +150,11 @@ void        ui_button_long(void);
 void        ui_set_on_edit(void (*cb)(void));
 
 void        ui_set_on_brightness(void (*cb)(int pct));
+/* Optional: scale the panel's light 0-255 on top of the brightness level.
+ * When set, screen transitions dip the light instead of fading pixels. */
+void        ui_set_on_bright_scale(void (*cb)(uint8_t scale));
+void        ui_dip_ms_set(uint32_t out_ms, uint32_t in_ms);
+void        ui_dip_ms_get(uint32_t *out_ms, uint32_t *in_ms);
 
 void        ui_set_on_display_sleep(void (*cb)(bool sleep));
 
@@ -156,7 +166,7 @@ bool        ui_night_active(void);
 
 void        ui_set_on_units(void (*cb)(bool use_f));
 
-void        ui_set_bridge_link(bool bonded, bool online, const uint8_t mac[6], int rssi);
+void        ui_set_link_state(bool bonded, bool online, const uint8_t mac[6], int rssi);
 
 void        ui_set_on_pair(void (*cb)(void));
 void        ui_set_on_pair_cancel(void (*cb)(void));

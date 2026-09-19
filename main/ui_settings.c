@@ -30,7 +30,15 @@ static void settings_node_click_cb(lv_event_t *e);
 static void wifi_row_press_cb(lv_event_t *e);
 static void wifi_row_release_cb(lv_event_t *e);
 
-void settings_enter(void) { s_set_sel = 0; s_set_editing = false; }
+static int s_set_landing = -1;
+
+void settings_enter(void)
+{
+    s_set_sel = s_set_landing >= 0 ? s_set_landing : SET_BRIGHT;
+    s_set_landing = -1;
+    if (!set_keep(s_set_sel)) s_set_sel = SET_BRIGHT;
+    s_set_editing = false;
+}
 
 void settings_caps_changed(void)
 {
@@ -43,9 +51,8 @@ void settings_caps_changed(void)
 
 void settings_land(int set_row)
 {
+    s_set_landing = (set_row >= 0 && set_row < SET_N) ? set_row : SET_BRIGHT;
     ui_show_screen(SCREEN_SETTINGS);
-    s_set_sel = set_row;
-    refresh_settings();
 }
 
 void settings_turn(int delta)
@@ -64,7 +71,7 @@ void settings_turn(int delta)
 }
 
 static const char *SET_NAME[SET_N] = {
-    "Brightness", "WiFi", "Link", "HomeKit", "Room Sensor", "About", "Advanced", "Back"
+    "Brightness", "Wi-Fi", "Link", "HomeKit", "Room Sensor", "About", "Advanced", "Back"
 };
 
 static const char *set_name(int i)
@@ -82,7 +89,7 @@ const uint32_t SET_COL[SET_N] = {
 };
 
 static const serin_icon_t *const SET_ICON[SET_N] = {
-    &set_brightness, &set_wifi, &set_bridge, &set_homekit, &set_system_chip,
+    &set_brightness, &set_wifi, &set_link_row, &set_homekit, &set_units,
     &serin_logo,
     &set_advanced,
     &nav_back
@@ -217,7 +224,7 @@ void build_settings(void)
 
     SS.brPct = mklabel(c, FONT_BRIGHT, COL_WHITE, "100%");
 
-    SS.status = mklabel(c, FONT_STATUS, COL_SYSTEM, "Open >");
+    SS.status = mklabel(c, FONT_STATUS, COL_SYSTEM, "Open");
 
     static const touch_floor_arg_t k_wrow_tf = { 0, "SS.wrow" };
     SS.wrow = settings_status_row(c, SET_WIFI, "Connected", &k_wrow_tf, &SS.wdot, &SS.wconn);
@@ -250,7 +257,7 @@ void build_settings(void)
     press_ack(SS.abtn, ACK_OPA_CHIP);
     SS.abtnlbl = lv_obj_get_child(SS.abtn, 0);
 
-    SS.hint   = mklabel(c, FONT_HINT, COL_GREY, HINT_TURN_TAP);
+    SS.hint   = mklabel(c, FONT_HINT, COL_GREY, "");
     lv_obj_set_style_text_align(SS.hint, LV_TEXT_ALIGN_CENTER, 0);
 
     static const touch_floor_arg_t k_brtrack_tf = { 0, "SS.brTrack" };
@@ -300,19 +307,20 @@ void refresh_settings(void)
         ss_show(R_BRPCT);
         lv_obj_set_width(SS.brFill, SERIN_PX(188) * s_brightness / 100);
         lv_label_set_text_fmt(SS.brPct, "%d%%", s_brightness);
-        lv_label_set_text(SS.hint, s_set_editing ? H_PRESS("return") : HINT_TURN_TAP);
+        lv_label_set_text(SS.hint, H_PRESS("return"));
+        if (!s_set_editing) ss_hide(R_HINT);
     } else if (idx == SET_WIFI) {
         const hvac_state_t *s = &s_state;
         ss_show(R_WROW);
         const char *wtxt; uint32_t wcol;
-        if (!s_bridge.online)       { wtxt = "No link";   wcol = COL_ALERT_NOLINK; }
+        if (!s_link.online)         { wtxt = "No link";   wcol = COL_ALERT_NOLINK; }
         else if (s->wifi_connected) { wtxt = "Connected"; wcol = COL_GREEN; }
         else                        { wtxt = "Offline";   wcol = COL_GREY; }
         chip_status(SS.wdot, SS.wconn, wcol, wtxt);
         bool can_setup = (s_caps.features & SL2_FEAT_WIFI_SETUP) != 0;
         bool healthy   = s->wifi_provisioned && s->wifi_connected;
-        bool have_ip    = s_bridge.online && s->wifi_connected && s->wifi_ip[0];
-        bool can_change = s_bridge.online && s->wifi_setup_avail && (!healthy || can_setup);
+        bool have_ip    = s_link.online && s->wifi_connected && s->wifi_ip[0];
+        bool can_change = s_link.online && s->wifi_setup_avail && (!healthy || can_setup);
         const char *whint = NULL;
         if (have_ip) {
             whint = (healthy && can_change) ? H2(H_PRESS("show web UI"), H_HOLD("change network"))
@@ -329,7 +337,7 @@ void refresh_settings(void)
         const hvac_state_t *s = &s_state;
         bool paired = s->hk_paired > 0;
         const char *hktxt; uint32_t hkcol;
-        if (!s_bridge.online) {
+        if (!s_link.online) {
             hktxt = "No link";       hkcol = COL_ALERT_NOLINK;
         } else if (paired) {
             hktxt = "Paired";        hkcol = COL_GREEN;
@@ -339,15 +347,15 @@ void refresh_settings(void)
             hktxt = "Ready to pair"; hkcol = COL_GREY;
         }
         ss_show(R_HKROW);
-        if (s_bridge.online && !paired) lv_label_set_text(SS.hint, H_PRESS("show QR"));
+        if (s_link.online && !paired) lv_label_set_text(SS.hint, H_PRESS("show QR"));
         else ss_hide(R_HINT);
         chip_status(SS.hkdot, SS.hkpaired, hkcol, hktxt);
-        if (!s_bridge.online || !paired) lv_obj_add_flag(SS.hkrow, LV_OBJ_FLAG_CLICKABLE);
+        if (!s_link.online || !paired) lv_obj_add_flag(SS.hkrow, LV_OBJ_FLAG_CLICKABLE);
         else                             lv_obj_remove_flag(SS.hkrow, LV_OBJ_FLAG_CLICKABLE);
     } else if (idx == SET_LINK) {
         ss_show(R_LROW);
         uint32_t lc; const char *lt;
-        if (s_bridge.online) { lc = COL_GREEN;        lt = "Connected"; }
+        if (s_link.online)   { lc = COL_GREEN;        lt = "Connected"; }
         else                 { lc = COL_ALERT_NOLINK; lt = "No link";   }
         chip_status(SS.ldot, SS.lconn, lc, lt);
         if (s_zn_ui >= 1) {
@@ -355,10 +363,10 @@ void refresh_settings(void)
             lv_label_set_text(SS.lmeta, nm);
             ss_show(R_LMETA);
         }
-        lv_label_set_text(SS.hint, s_bridge.bonded
+        lv_label_set_text(SS.hint, s_link.bonded
             ? H2(H_PRESS("add zone"), H_HOLD("forget"))
             : H_PRESS("pair"));
-        if (!s_bridge.online) lv_obj_add_flag(SS.lrow, LV_OBJ_FLAG_CLICKABLE);
+        if (!s_link.online) lv_obj_add_flag(SS.lrow, LV_OBJ_FLAG_CLICKABLE);
         else                  lv_obj_remove_flag(SS.lrow, LV_OBJ_FLAG_CLICKABLE);
     } else if (idx == SET_SYSTEM) {
         const hvac_state_t *s = &s_state;
@@ -390,17 +398,20 @@ void refresh_settings(void)
             ss_show(R_ABATT);
         }
         ss_show(R_ABTN);
-        lv_label_set_text(SS.hint, H_PRESS("open"));
+        ss_hide(R_HINT);
     } else if (idx == SET_ADVANCED) {
         ss_show(R_STATUS);
-        lv_label_set_text(SS.status, "Open >");
+        lv_label_set_text(SS.status, "Open");
         lv_obj_set_style_text_color(SS.status, lv_color_hex(SET_COL[SET_ADVANCED]), 0);
-        lv_label_set_text(SS.hint, H_PRESS("open"));
+        ss_hide(R_HINT);
     } else {
         ss_show(R_STATUS);
-        lv_label_set_text(SS.status, "Exit to menu");
+        /* Settings is usually opened from the Menu, but a dialog can jump
+         * straight here from the home dial; name whichever one Back returns to. */
+        lv_label_set_text(SS.status, ui_back_target() == SCREEN_MENU ? "Exit to menu"
+                                                                    : "Exit to home");
         lv_obj_set_style_text_color(SS.status, lv_color_hex(COL_BACK), 0);
-        lv_label_set_text(SS.hint, HINT_TURN_TAP);
+        ss_hide(R_HINT);
     }
 
     ss_rows_apply();
@@ -409,7 +420,7 @@ void refresh_settings(void)
 static void settings_open(int idx)
 {
     switch (idx) {
-        case SET_BACK:     ui_show_screen(SCREEN_THERMOSTAT); break;
+        case SET_BACK:     ui_back();                         break;
         case SET_ADVANCED: ui_show_screen(SCREEN_ADVANCED);   break;
         default: break;
     }
@@ -429,7 +440,7 @@ void settings_press(void)
             begin_pairing();
         }
     } else if (s_set_sel == SET_HOMEKIT) {
-        if (s_bridge.online && s_state.hk_paired <= 0) homekit_qr_entry();
+        if (s_link.online && s_state.hk_paired <= 0) homekit_qr_entry();
         else settings_chip_dialog(SET_HOMEKIT);
     } else if (s_set_sel == SET_WIFI) {
         wifi_setup_entry();
@@ -455,7 +466,7 @@ void settings_node_click_cb(lv_event_t *e)
     } else if (idx == SET_LINK) {
         s_set_editing = false;
         refresh_settings();
-        if (!s_bridge.bonded) settings_press();
+        if (!s_link.bonded) settings_press();
     } else {
         s_set_editing = false;
         settings_open(idx);
@@ -479,7 +490,7 @@ static void set_chip_click_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
     if (idx == SET_WIFI) { wifi_setup_entry(); return; }
-    if (idx == SET_HOMEKIT && s_bridge.online && s_state.hk_paired <= 0) {
+    if (idx == SET_HOMEKIT && s_link.online && s_state.hk_paired <= 0) {
         homekit_qr_entry();
         return;
     }

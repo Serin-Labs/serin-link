@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Mehmet Bayram
 """digit_1..digit_7 PNG masters: the zone-number rim glyphs (Zones picker —
-each zone node draws its slot number instead of the shared set_bridge glyph).
+each zone node draws its slot number instead of the shared set_link_row glyph).
 
 Rendered from the dial's own typeface, tools/PlusJakartaSans-SemiBold.ttf
 (weight 600 == the jakarta_600_* hero faces), so the rim numbers match the

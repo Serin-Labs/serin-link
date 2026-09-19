@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Mehmet Bayram
-"""set_motion PNG master: a disc with two receding motion trails (Advanced/
-Motion rim node — the screen fade-in toggle). Same recovery move as
+"""set_transitions PNG master: a disc with two receding motion trails
+(Advanced/Transitions rim node — the screen fade toggle). Same recovery move as
 gen_set_night.py: no hand-authored master exists, so it is drawn procedurally in
 glyph-space, supersampled and LANCZOS-downscaled, baked to 52x52 to match the
 set_* family (gen_icons.py whitelists the 52->60 bake in UPSCALE_OK).
 
-Placeholder: if a design pass produces a real set_motion master, swap the PNG
-and delete this script's role.
+Placeholder: if a design pass produces a real set_transitions master, swap
+the PNG and delete this script's role.
 
-    python3 tools/gen_set_motion.py  # writes icon_masters/icon_assets/png/set_motion.png
+    python3 tools/gen_set_transitions.py  # writes icon_masters/icon_assets/png/set_transitions.png
 """
 import os
 
@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 
 BAKE = 52
 SS = 16
-NAME = "set_motion"
+NAME = "set_transitions"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
 

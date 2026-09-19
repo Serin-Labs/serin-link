@@ -14,13 +14,14 @@ extern const serin_icon_t mode_heat, mode_cool, mode_auto, mode_dry, mode_off,
 
 extern const serin_icon_t nav_temp, nav_mode_mark, nav_gear, nav_back;
 
-extern const serin_icon_t set_brightness, set_units, set_wifi, set_bridge,
+extern const serin_icon_t set_brightness, set_units, set_wifi, set_link_row,
                           set_homekit, set_system_chip, set_advanced;
 
 extern const serin_icon_t digit_1, digit_2, digit_3, digit_4, digit_5,
                           digit_6, digit_7;
 
-extern const serin_icon_t set_lock, set_idle, set_reset, set_night, set_motion;
+extern const serin_icon_t set_lock, set_idle, set_reset, set_night,
+                          set_transitions;
 
 extern const serin_icon_t serin_logo;
 

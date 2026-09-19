@@ -2,4 +2,4 @@
 #   python3 -m http.server 8000
 # 192.0.2.10 is RFC 5737 documentation space — replace it with your own host.
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
-CONFIG_SERIN_LINK_OTA_MANIFEST_URL="http://192.0.2.10:8000/firmware/link/manifest.json"
+CONFIG_SERIN_LINK_OTA_MANIFEST_URL="http://192.0.2.10:8000/firmware/link/ota/stable/manifest.json"
