@@ -33,6 +33,21 @@ static inline int ota_ver_cmp(const char *a, const char *b)
     return pa - pb;
 }
 
+/* A release-channel pre-release is exactly maj.min.patch-word.N. A git-describe
+   tail on a bench build (-3-gabc1234, -dirty) is not one. */
+static inline bool ota_ver_is_prerelease(const char *v)
+{
+    if (*v == 'v' || *v == 'V') v++;
+    int x[3], n = 0;
+    if (sscanf(v, "%d.%d.%d-%n", &x[0], &x[1], &x[2], &n) != 3 || n == 0) return false;
+    const char *p = v + n;
+    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) return false;
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) p++;
+    if (*p++ != '.' || *p < '0' || *p > '9') return false;
+    while (*p >= '0' && *p <= '9') p++;
+    return *p == '\0';
+}
+
 static inline int ota_hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';

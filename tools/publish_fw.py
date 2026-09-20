@@ -10,6 +10,8 @@ Usage (from the serin-link repo root, with ESP-IDF exported):
     python3 tools/publish_fw.py --no-build --distribution ../serin-cn105
     python3 tools/publish_fw.py --signing-key /path/to/production-private.pem --channel beta --version 0.1.7-beta.1
     python3 tools/publish_fw.py --signing-key /path/to/production-private.pem --factory
+    python3 tools/publish_fw.py --signing-key /path/to/production-private.pem --factory --channel beta --version 0.1.9-beta.1
+    python3 tools/publish_fw.py --factory --split-existing ~/serin-cn105/firmware/link
 
 Release builds use fresh build_pub_<board>/ dirs on the plain chain
 (sdkconfig.defaults + board overlay). That chain is unsecured by default, and a
@@ -35,6 +37,15 @@ so a board can be programmed with esptool alone and no ESP-IDF toolchain. These
 images hold no key and no credential. The ESP-NOW PMK is the public constant in
 main/sl2_proto.h, compiled into every build, and trust comes from pairing
 instead -- see the "Link protocol" section of README.md.
+Beside each merged image, --factory writes the same bytes as split parts
+(bootloader, partition table, blank otadata, app) and lists them under `parts`
+in factory-manifest.json. The merged image pads across the nvs partition at
+0x9000, so flashing it resets the dial's settings; the parts leave nvs alone,
+which is how the web flasher reinstalls without losing pairings. The parts are
+sliced from the merged image, never built separately, so the two cannot differ.
+--split-existing adds parts to an already published release without a rebuild.
+--channel beta stages pre-release factory images to dist_factory/beta/, for
+firmware/link/factory/beta/ in the distribution repo.
 factory-manifest.json records a `dirty` flag, which
 is true when HEAD is not an exact tag or the tracked tree has edits, so a
 downstream flashing step can refuse a build that is not a release.
@@ -96,6 +107,47 @@ def merge_factory(bdir: pathlib.Path, out: pathlib.Path) -> None:
         cwd=bdir, check=True)
     if not out.exists():
         sys.exit(f"merge-bin produced no output at {out}")
+
+# Flash regions a factory image may write, from partitions.csv: bootloader,
+# partition table, otadata, ota_0. nvs (0x9000) and phy_init (0x11000) lie
+# between them and must be 0xFF in the merged image.
+FACTORY_OTADATA = (0xf000, 0x2000)
+FACTORY_PART_TABLE = (0x8000, 0xc00)
+
+def split_factory(data: bytes, board: str) -> list[tuple[str, int, bytes]]:
+    """Slice a merged factory image into (name, offset, bytes) flash parts.
+
+    otadata is written in full and blank on purpose: a dial that has taken an
+    OTA boots ota_1, and blank otadata is what returns the bootloader to the
+    ota_0 this install just wrote.
+    """
+    boot = data[:FACTORY_PART_TABLE[0]].rstrip(b"\xff")
+    boot += b"\xff" * (-len(boot) % 4)
+    table_at, table_len = FACTORY_PART_TABLE
+    ota_at, ota_len = FACTORY_OTADATA
+    parts = [(f"serin_link_{board}_bootloader.bin", 0, boot),
+             (f"serin_link_{board}_partition-table.bin", table_at, data[table_at:table_at + table_len]),
+             (f"serin_link_{board}_otadata.bin", ota_at, b"\xff" * ota_len),
+             (f"serin_link_{board}_app.bin", FACTORY_APP_OFFSET, data[FACTORY_APP_OFFSET:])]
+    rebuilt = bytearray(b"\xff" * len(data))
+    for name, offset, chunk in parts:
+        if not chunk.strip(b"\xff") and offset != ota_at:
+            sys.exit(f"{name}: the merged image has nothing at {offset:#x}")
+        rebuilt[offset:offset + len(chunk)] = chunk
+    if bytes(rebuilt) != data:
+        sys.exit(f"{board}: merged image writes flash outside the bootloader, partition table, "
+                 "blank otadata and ota_0; split parts would not install the same bytes")
+    return parts
+
+def factory_entry(board: str, asset: str, data: bytes, artifacts: dict[str, bytes]) -> dict:
+    """Manifest build entry for a verified merged image; adds it and its parts to `artifacts`."""
+    artifacts[asset] = data
+    parts = []
+    for name, offset, chunk in split_factory(data, board):
+        artifacts[name] = chunk
+        parts.append({"path": name, "offset": offset, "sha256": hashlib.sha256(chunk).hexdigest()})
+    return {"board": board, "path": asset, "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "parts": parts}
 
 DEV_SIGNING_KEY = ROOT / "secure_boot_signing_key.pem"
 RELEASE_PUBLIC_KEY = ROOT / "tools/keys/serin-link-release.pub"
@@ -343,7 +395,11 @@ def main() -> int:
     ap.add_argument("--distribution", type=pathlib.Path,
                     help="also stage a complete production OTA channel into a local serin-cn105 checkout; "
                          "validate the full candidate distribution before replacing files; never push")
-    ap.add_argument("--factory", action="store_true", help="build merged single-file images (flashable at 0x0) to dist_factory/")
+    ap.add_argument("--factory", action="store_true", help="build merged single-file images (flashable at 0x0) plus "
+                         "their split parts to dist_factory/ (dist_factory/beta/ with --channel beta)")
+    ap.add_argument("--split-existing", type=pathlib.Path, metavar="DIR",
+                    help="with --factory: take the verified merged images and factory-manifest.json already in DIR "
+                         "instead of building, and stage them unchanged with split parts added")
     ap.add_argument("--channel", choices=["stable", "beta"], default="stable",
                     help="beta: stage for the public beta feed (the dial's opt-in "
                          "channel, CONFIG_SERIN_LINK_OTA_MANIFEST_BETA_URL); manifest gains channel=beta")
@@ -361,7 +417,10 @@ def main() -> int:
                               set(args.boards or BOARDS) != set(BOARDS)):
         sys.exit("--distribution requires production OTA images for both boards; "
                  "it cannot be combined with --factory or --development")
-    out = (args.out or ROOT / ("dist_factory" if args.factory else "dist")).expanduser().resolve()
+    if args.split_existing and not args.factory:
+        sys.exit("--split-existing needs --factory")
+    factory_out = ROOT / "dist_factory" / ("beta" if args.channel == "beta" else "")
+    out = (args.out or (factory_out if args.factory else ROOT / "dist")).expanduser().resolve()
     if args.distribution:
         distribution = args.distribution.expanduser().resolve()
         if out.is_relative_to(distribution) or distribution.is_relative_to(out):
@@ -374,11 +433,24 @@ def main() -> int:
             sys.exit("--development requires --out outside dist/ and dist_factory/")
         signing_key = signing_key or DEV_SIGNING_KEY
         print("DEVELOPMENT staging: for devices using your own key; not a Serin production release.")
-    elif not args.no_build and signing_key is None:
+    elif not args.no_build and not args.split_existing and signing_key is None:
         sys.exit("Production builds require --signing-key <production private key>; "
                  "use --development --out <separate directory> for your own key")
     key = verification_key(signing_key, args.development)
 
+    existing = None
+    if args.split_existing:
+        source = args.split_existing.expanduser().resolve()
+        if source == out:
+            sys.exit("--split-existing DIR and the output directory must differ")
+        existing = json.loads((source / "factory-manifest.json").read_text())
+        if args.version_override not in (None, existing.get("version")):
+            sys.exit(f"--version differs from the release in {source}")
+        args.version_override = existing.get("version") or ""
+        if "-" in args.version_override:
+            args.channel = "beta"
+            if args.out is None:
+                out = (ROOT / "dist_factory/beta").resolve()
     version = args.version_override if args.version_override is not None \
               else (ROOT / "version.txt").read_text().strip()
     if len(version) > 31 or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z]+\.[0-9]+)?", version):
@@ -389,8 +461,6 @@ def main() -> int:
                  "triple on the beta channel would outrank the stable release it shadows")
     if args.channel == "stable" and "-" in version:
         sys.exit(f"{version} is a pre-release; publish it with --channel beta")
-    if args.factory and args.channel != "stable":
-        sys.exit("--factory has no channel")
 
     boards = args.boards or sorted(BOARDS)
 
@@ -399,33 +469,40 @@ def main() -> int:
         builds = []
         artifacts = {}
         for board in boards:
-            bdir = ROOT / f"build_fac_{board}" if args.no_build \
-                   else build_factory(board, BOARDS[board], signing_key, version)
-            assert_factory_chain(bdir)
-            if not args.development:
-                assert_distribution_urls(bdir)
             asset = f"serin_link_{board}_factory.bin"
-            with tempfile.TemporaryDirectory(prefix="serin-factory-check-") as tmp:
-                merged = pathlib.Path(tmp) / asset
-                merge_factory(bdir, merged)
-                data = merged.read_bytes()
+            if existing is not None:
+                entry = next((b for b in existing.get("builds", []) if b.get("board") == board), None)
+                if entry is None or entry.get("path") != asset:
+                    sys.exit(f"{source}/factory-manifest.json has no {asset} build for {board}")
+                data = (source / asset).read_bytes()
+                if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+                    sys.exit(f"{source / asset}: sha256 differs from its manifest")
+            else:
+                bdir = ROOT / f"build_fac_{board}" if args.no_build \
+                       else build_factory(board, BOARDS[board], signing_key, version)
+                assert_factory_chain(bdir)
+                if not args.development:
+                    assert_distribution_urls(bdir)
+                with tempfile.TemporaryDirectory(prefix="serin-factory-check-") as tmp:
+                    merged = pathlib.Path(tmp) / asset
+                    merge_factory(bdir, merged)
+                    data = merged.read_bytes()
             verify_signed_app(data[FACTORY_APP_OFFSET:], key, asset)
             assert_app_version(data[FACTORY_APP_OFFSET:], version, asset)
-            artifacts[asset] = data
-            builds.append({
-                "board": board,
-                "path": asset,
-                "size": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            })
+            builds.append(factory_entry(board, asset, data, artifacts))
             print(f"{board}: factory {len(data)} B  {builds[-1]['sha256'][:12]}…")
         # Validate every board before replacing any previous release artifact.
-        replace_artifacts(out_dir, artifacts, "serin_link_*_factory.bin")
-        (out_dir / "factory-manifest.json").write_text(
-            json.dumps({"name": "Serin Link (factory)", "version": version,
-                        "dirty": _tree_dirty(), "builds": builds}, indent=2) + "\n")
+        replace_artifacts(out_dir, artifacts, "serin_link_*.bin")
+        # A republished release keeps its recorded provenance: the tree this
+        # runs from says nothing about the tree those images were built from.
+        dirty = bool(existing.get("dirty", True)) if existing is not None else _tree_dirty()
+        manifest = {"name": "Serin Link (factory)", "version": version}
+        if args.channel == "beta":
+            manifest["channel"] = "beta"
+        manifest.update({"dirty": dirty, "builds": builds})
+        (out_dir / "factory-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"staged {out_dir} (version {version}) — merged factory images, "
-              f"flashable at 0x0 with esptool")
+              f"flashable at 0x0 with esptool, and their split parts")
         return 0
 
     # Each public channel uses the same flat asset names in its own directory.

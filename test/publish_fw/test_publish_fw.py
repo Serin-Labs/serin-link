@@ -130,7 +130,10 @@ class StagingTests(unittest.TestCase):
 
     @staticmethod
     def merge_fixture(bdir, out):
-        out.write_bytes(b"\xff" * 0x20000 + (bdir / publish.BIN_NAME).read_bytes())
+        head = bytearray(b"\xff" * 0x20000)
+        head[:6] = b"\xe9boot\xff"           # ends in 0xFF, like a padded bootloader
+        head[0x8000:0x8005] = b"\xaa\x50tbl"
+        out.write_bytes(bytes(head) + (bdir / publish.BIN_NAME).read_bytes())
 
     def test_no_build_verifies_without_private_key_and_hashes_exact_staged_bytes(self):
         code, output = self.run_publish("--no-build")
@@ -394,9 +397,11 @@ class StagingTests(unittest.TestCase):
 
     def test_factory_no_build_merges_without_idf_or_private_key(self):
         bdir = self.root / "build_fac_viewe15"
+        (bdir / "boot.bin").write_bytes(b"\xe9boot")
+        (bdir / "table.bin").write_bytes(b"\xaa\x50tbl")
         (bdir / "flash_args").write_text(
             "--flash_mode keep --flash_freq keep --flash_size keep\n"
-            "0x20000 serin_link.bin\n")
+            "0x0 boot.bin\n0x8000 table.bin\n0x20000 serin_link.bin\n")
         # Python and esptool remain available through sys.executable, while
         # idf.py, the compiler, and production private keys are unavailable.
         with patch.dict(os.environ, {"PATH": str(self.root / "empty-path")}):
@@ -407,6 +412,81 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         data = (self.root / "dist_factory/serin_link_viewe15_factory.bin").read_bytes()
         self.assertEqual(data[0x20000:], self.signed["release"])
+
+    def staged_factory(self, stage):
+        manifest = json.loads((stage / "factory-manifest.json").read_text())
+        return manifest, {p.name: p.read_bytes() for p in stage.iterdir() if p.suffix == ".bin"}
+
+    def test_factory_parts_reassemble_to_the_merged_image_and_skip_nvs(self):
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            code, output = self.run_publish("--factory", "--no-build")
+        self.assertEqual(code, 0, output)
+        manifest, files = self.staged_factory(self.root / "dist_factory")
+        for entry in manifest["builds"]:
+            merged = files[entry["path"]]
+            rebuilt = bytearray(b"\xff" * len(merged))
+            self.assertEqual([p["offset"] for p in entry["parts"]], [0, 0x8000, 0xf000, 0x20000])
+            for part in entry["parts"]:
+                chunk = files[part["path"]]
+                self.assertEqual(part["sha256"], hashlib.sha256(chunk).hexdigest())
+                self.assertFalse(part["offset"] < 0xf000 and part["offset"] + len(chunk) > 0x9000,
+                                 f"{part['path']} reaches into nvs")
+                rebuilt[part["offset"]:part["offset"] + len(chunk)] = chunk
+            self.assertEqual(bytes(rebuilt), merged)
+            self.assertEqual(files[entry["parts"][2]["path"]], b"\xff" * 0x2000)
+        self.assertEqual(len(files), 10)  # no unreferenced file for the distribution validator to fail on
+
+    def test_factory_refuses_a_merged_image_that_writes_into_nvs(self):
+        def merge_with_nvs(bdir, out):
+            self.merge_fixture(bdir, out)
+            data = bytearray(out.read_bytes())
+            data[0x9000:0x9004] = b"nvs!"
+            out.write_bytes(data)
+        stage, previous = self.existing_release(factory=True)
+        with patch.object(publish, "merge_factory", side_effect=merge_with_nvs):
+            self.assert_rejected(["--factory", "--no-build"], stage, previous, message="outside")
+
+    def test_beta_factory_stages_to_its_own_directory_with_channel(self):
+        for board in ("viewe15", "viewe21"):
+            (self.root / f"build_fac_{board}" / publish.BIN_NAME).write_bytes(self.signed["beta"])
+        stable, previous = self.existing_release(factory=True)
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            code, output = self.run_publish("--factory", "--no-build", "--channel", "beta",
+                                            "--version", "0.1.7-beta.1")
+        self.assertEqual(code, 0, output)
+        manifest, _ = self.staged_factory(self.root / "dist_factory/beta")
+        self.assertEqual((manifest["channel"], manifest["version"]), ("beta", "0.1.7-beta.1"))
+        self.assertEqual({p.name: p.read_bytes() for p in stable.iterdir() if p.is_file()}, previous)
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            code, output = self.run_publish("--factory", "--no-build", "--channel", "beta")
+        self.assertNotEqual(code, 0, output)  # 0.1.6 is not a pre-release
+
+    def test_split_existing_adds_parts_without_changing_the_published_images(self):
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            self.run_publish("--factory", "--no-build")
+        published = self.root / "published"
+        published.mkdir()
+        manifest, files = self.staged_factory(self.root / "dist_factory")
+        for entry in manifest["builds"]:
+            (published / entry["path"]).write_bytes(files[entry["path"]])
+            del entry["parts"]
+        manifest["dirty"] = False
+        (published / "factory-manifest.json").write_text(json.dumps(manifest))
+        with patch.object(publish, "merge_factory", side_effect=AssertionError("unexpected merge")), \
+                patch.object(publish, "_tree_dirty", return_value=True):
+            code, output = self.run_publish("--factory", "--split-existing", published,
+                                            "--out", self.root / "restaged")
+        self.assertEqual(code, 0, output)
+        again, refiles = self.staged_factory(self.root / "restaged")
+        self.assertFalse(again["dirty"])  # provenance is the published release's, not this checkout's
+        self.assertEqual(refiles, files)
+        self.assertTrue(all(entry["parts"] for entry in again["builds"]))
+        # A published image that no longer matches its manifest is not republished.
+        (published / "serin_link_viewe21_factory.bin").write_bytes(b"tampered")
+        code, output = self.run_publish("--factory", "--split-existing", published,
+                                        "--out", self.root / "restaged-2")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("sha256", output)
 
     def test_factory_build_with_matching_key_stages_verified_images(self):
         with patch.object(publish, "build_factory", side_effect=lambda board, *_:

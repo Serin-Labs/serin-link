@@ -16,6 +16,18 @@ static void test_ordering(void) {
     assert(ota_ver_cmp("0.10.0", "0.9.9") > 0);
 }
 
+static void test_prerelease_detection(void) {
+    assert(ota_ver_is_prerelease("0.1.9-beta.1"));
+    assert(ota_ver_is_prerelease("v0.1.9-rc.12"));
+    assert(!ota_ver_is_prerelease("0.1.8"));
+    /* git-describe tails on bench builds are not a release channel */
+    assert(!ota_ver_is_prerelease("0.1.8-3-gabc1234"));
+    assert(!ota_ver_is_prerelease("0.1.8-dirty"));
+    assert(!ota_ver_is_prerelease("0.1.8-beta.1-dirty"));
+    assert(!ota_ver_is_prerelease("0.1.8-beta."));
+    assert(!ota_ver_is_prerelease("garbage"));
+}
+
 static void test_unparseable_reads_equal(void) {
     assert(ota_ver_cmp("garbage", "1.0.0") == 0);
     assert(ota_ver_cmp("1.0.0", "garbage") == 0);
@@ -69,6 +81,7 @@ static void test_guard_health_beats_the_deadline(void) {
 }
 
 int main(void) {
+    test_prerelease_detection();
     test_ordering();
     test_unparseable_reads_equal();
     test_v_prefix_tolerated();

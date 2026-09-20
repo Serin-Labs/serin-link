@@ -193,7 +193,10 @@ config SERIN_LINK_OTA_MANIFEST_BETA_URL
         --distribution <serin-cn105 checkout>. Stable and beta have separate
         directories. Used instead of the stable URL
         while the NVS pref `ota_beta` is set (console: `ota-channel beta`),
-        mirroring the controller's opt-in beta toggle. Leave empty to compile
+        mirroring the controller's opt-in beta toggle. A pre-release build
+        (version maj.min.patch-word.N) defaults the pref to set, so a dial
+        installed from a beta image is not offered the older stable release;
+        `ota-channel stable` stores an explicit opt-out. Leave empty to compile
         the channel out: `ota-channel beta` is then refused.
 
 config SERIN_THERMAL_CAL

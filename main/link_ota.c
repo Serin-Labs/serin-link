@@ -115,9 +115,13 @@ static bool ota_beta_available(void)
     return CONFIG_SERIN_LINK_OTA_MANIFEST_BETA_URL[0] != '\0';
 }
 
+/* A dial installed from a pre-release image follows the beta feed until told
+   otherwise. On the stable feed it would be offered the older stable release
+   as an update, because a release outranks its own pre-releases. */
 static bool ota_beta_selected(void)
 {
-    return ota_beta_available() && prefs_get_bool(OTA_BETA_PREF, false);
+    bool pre = ota_ver_is_prerelease(esp_app_get_description()->version);
+    return ota_beta_available() && prefs_get_bool(OTA_BETA_PREF, pre);
 }
 
 /* Caller supplies the buffer: this runs on both the console and the ESP-NOW
@@ -138,7 +142,8 @@ static int cmd_ota_channel(int argc, char **argv)
             if (!ota_beta_available()) { printf("ota-channel: no beta channel in this build\n"); return 1; }
             prefs_set_bool(OTA_BETA_PREF, true);
         } else if (strcmp(argv[1], "stable") == 0) {
-            prefs_erase(OTA_BETA_PREF);
+            /* Stored, not erased: on a pre-release build an absent pref means beta. */
+            prefs_set_bool(OTA_BETA_PREF, false);
         } else {
             printf("usage: ota-channel [stable|beta]\n");
             return 1;
@@ -146,7 +151,7 @@ static int cmd_ota_channel(int argc, char **argv)
     }
     char url[OTA_URL_MAX];
     printf("ota-channel: %s\n  %s\n",
-           prefs_get_bool(OTA_BETA_PREF, false) ? "beta" : "stable",
+           ota_beta_selected() ? "beta" : "stable",
            ota_manifest_url(url, sizeof url));
     return 0;
 }
