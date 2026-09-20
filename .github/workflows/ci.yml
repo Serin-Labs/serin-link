@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Serin-Labs/serin-cn105
-          ref: 4819ffd993e03821884c60a6818aa8a3ceae47e8
+          ref: cc8cfeb92ab9a9b49f0d2784f7ac8d21824de22f
           path: validation-tools
           sparse-checkout: scripts
           persist-credentials: false

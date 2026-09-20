@@ -35,6 +35,7 @@
 #include "espnow_bond.h"
 #include "espnow_liveness.h"
 #include "espnow_chscan.h"
+#include "espnow_events.h"
 #include "edit_hold.h"
 #include "link_crypto.h"
 #include "wdt_crumb.h"
@@ -631,21 +632,12 @@ static void apply_info_tlvs(int zi, const uint8_t *tlvs, size_t len) {
     if (want_catalog) room_catalog_req(zi, 0, 0);
 }
 
-enum { EV_RX, EV_CMD, EV_TX, EV_WAKE };
-static volatile bool s_wake_due;
-static volatile bool s_wake_queued;
-typedef struct {
-    uint8_t kind;
-    uint8_t zi;
-    uint8_t len;
-    uint8_t data[ESP_NOW_MAX_DATA_LEN];
-} evt_t;
-#define EV_Q_DEPTH 8
-static QueueHandle_t s_evq;
+static bool s_wake_due;
+static espnow_events_t s_evq;
 static volatile uint32_t s_rx_drop;
 
 static void handle_evt(evt_t *it) {
-    if (it->kind == EV_WAKE) { s_wake_queued = false; s_wake_due = true; return; }
+    if (it->kind == EV_WAKE) { s_wake_due = true; return; }
     if (it->zi >= s_zn) return;
     if (it->kind == EV_CMD) {
         struct sl2_cmd_pkt c;
@@ -737,13 +729,13 @@ static void handle_evt(evt_t *it) {
 
 static void evt_post(uint8_t kind, int zi, const void *buf, size_t len,
                      const char *what) {
-    if (!s_evq || zi < 0 || zi >= s_zn || len > ESP_NOW_MAX_DATA_LEN) return;
+    if (zi < 0 || zi >= s_zn || len > ESP_NOW_MAX_DATA_LEN) return;
     evt_t it;
     it.kind = kind;
     it.zi   = (uint8_t)zi;
     it.len  = (uint8_t)len;
     memcpy(it.data, buf, len);
-    if (xQueueSend(s_evq, &it, 0) != pdTRUE)
+    if (!espnow_events_post(&s_evq, &it))
         ESP_LOGW(TAG, "event queue full — %s dropped", what);
 }
 static void cmd_post(int zi, const struct sl2_cmd_pkt *c) {
@@ -751,13 +743,13 @@ static void cmd_post(int zi, const struct sl2_cmd_pkt *c) {
 }
 
 static void evt_pump(uint32_t wait_ms) {
-    if (!s_evq) return;
+    if (!s_evq.handle) return;
     uint32_t deadline = now_ms() + wait_ms;
     for (;;) {
         int32_t left = (int32_t)(deadline - now_ms());
         TickType_t t = left > 0 ? pdMS_TO_TICKS((uint32_t)left) : 0;
         evt_t it;
-        if (xQueueReceive(s_evq, &it, t) != pdTRUE) {
+        if (!espnow_events_receive(&s_evq, &it, t)) {
             if (t == 0) return;
             continue;
         }
@@ -814,7 +806,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     it.zi   = (uint8_t)zi;
     it.len  = (uint8_t)len;
     memcpy(it.data, data, (size_t)len);
-    if (!s_evq || xQueueSend(s_evq, &it, 0) != pdTRUE) { s_rx_drop++; return; }
+    if (!espnow_events_post(&s_evq, &it)) { s_rx_drop++; return; }
     z->lastRxMs = ms_stamp(now_ms());
 }
 
@@ -1161,7 +1153,8 @@ static void link_task(void *arg) {
                 if (s_z[i].synced) s_z[i].lastRxMs = ms_stamp(now_ms());
                 if (heldOnline & (1u << i)) s_z[i].lastAckMs = ms_stamp(now_ms());
             }
-            if (s_evq) xQueueReset(s_evq);
+            espnow_events_reset(&s_evq);
+            s_wake_due = false;
             radio_go_home();
             sweep_backoff_reset();
             if (s_sweeping) sweep_begin();
@@ -1755,10 +1748,9 @@ static void radio_ps_apply(void) {
 
 static void on_wake_interval(void *arg, esp_event_base_t base, int32_t id, void *data) {
     (void)arg; (void)base; (void)id; (void)data;
-    if (!s_evq || !s_ps_applied_min || s_wake_queued) return;
+    if (!s_ps_applied_min) return;
     evt_t it = { .kind = EV_WAKE, .zi = 0, .len = 0 };
-    s_wake_queued = true;
-    if (xQueueSend(s_evq, &it, 0) != pdTRUE) s_wake_queued = false;
+    espnow_events_post(&s_evq, &it);
 }
 
 void espnow_client_radio_ps_override(bool enable, bool min) {
@@ -1830,10 +1822,10 @@ static bool ensure_radio(void) {
         ESP_LOGE(TAG, "esp_now init failed: %s", esp_err_to_name(e));
         return false;
     }
-    if (!s_evq)     s_evq     = xQueueCreate(EV_Q_DEPTH, sizeof(evt_t));
+    bool evq_ready = espnow_events_init(&s_evq);
     if (!s_tx_mux)  s_tx_mux  = xSemaphoreCreateMutex();
     if (!s_tx_done) s_tx_done = xSemaphoreCreateBinary();
-    if (!s_evq || !s_tx_mux || !s_tx_done) {
+    if (!evq_ready || !s_tx_mux || !s_tx_done) {
         ESP_LOGE(TAG, "link alloc failed (evq/txmux/txdone) — retrying");
         return false;
     }
