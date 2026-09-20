@@ -4,6 +4,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "sl2_proto.h"
 
 #define ESPNOW_RX_STALE_MS 25000
 
@@ -22,6 +23,22 @@ static inline uint32_t espnow_ack_window(bool active_cadence) {
 static inline bool espnow_ack_fresh(uint32_t now_ms, uint32_t last_ack_ms,
                                     uint32_t ack_win_ms) {
     return last_ack_ms != 0 && (uint32_t)(now_ms - last_ack_ms) < ack_win_ms;
+}
+
+static inline bool espnow_link_fresh(uint32_t now_ms, uint32_t last_ack_ms,
+                                     uint32_t ack_win_ms, uint32_t last_state_rx_ms) {
+    /* An actual peer STATE reply also proves contact. Keep its grace short:
+     * old state must not prolong liveness through a real interruption. */
+    return espnow_ack_fresh(now_ms, last_ack_ms, ack_win_ms) ||
+           (last_state_rx_ms != 0 &&
+            (uint32_t)(now_ms - last_state_rx_ms) < ESPNOW_ACK_WIN_ACTIVE_MS);
+}
+
+/* Used only after the caller accepts a frame from its bonded peer. Other
+ * packet types can still require deferred validation and are not evidence. */
+static inline bool espnow_state_reply(const uint8_t *data, int len) {
+    return data && len >= SL2_STATE_MIN_LEN && data[0] == SL2_PKT_STATE &&
+           data[1] >= SL2_PROTO_MIN_COMPAT;
 }
 
 static inline bool espnow_want_state(uint32_t now_ms, uint32_t last_rx_ms,

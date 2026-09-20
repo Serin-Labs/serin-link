@@ -60,6 +60,7 @@ typedef struct {
     volatile uint16_t epoch;
     uint16_t epochSync;
     volatile uint32_t lastRxMs;
+    volatile uint32_t lastStateRxMs; /* Actual receipt; never advanced for hold grace. */
     volatile uint32_t pendAckMs;
     volatile uint8_t  pendAckCh;
     volatile uint32_t lastAckMs;
@@ -140,8 +141,12 @@ static bool zone_cross_channel(int i) {
     return s_channel && s_z[i].bond.last_channel &&
            s_z[i].bond.last_channel != s_channel;
 }
-static bool zone_online(int i) {
+static bool zone_acked(int i) {
     return espnow_ack_fresh(now_ms(), s_z[i].lastAckMs, s_z[i].ackWin);
+}
+static bool zone_online(int i) {
+    return espnow_link_fresh(now_ms(), s_z[i].lastAckMs, s_z[i].ackWin,
+                            s_z[i].lastStateRxMs);
 }
 static bool zone_rx_stale(int i) {
     return espnow_rx_stale(now_ms(), s_z[i].lastRxMs, s_z[i].synced);
@@ -807,7 +812,9 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     it.len  = (uint8_t)len;
     memcpy(it.data, data, (size_t)len);
     if (!espnow_events_post(&s_evq, &it)) { s_rx_drop++; return; }
-    z->lastRxMs = ms_stamp(now_ms());
+    const uint32_t received = ms_stamp(now_ms());
+    z->lastRxMs = received;
+    if (espnow_state_reply(data, len)) z->lastStateRxMs = received;
 }
 
 static bool probe_channel(const uint8_t mac[6], uint8_t ch) {
@@ -863,9 +870,10 @@ static sweep_step_t sweep_probe_once(uint32_t now) {
     }
     s_sweep_step++;
     if (!probe_channel(z->bond.mac, ch)) return SWEEP_MISS;
-    if (!zone_online(s_active)) {
+    /* A reply received before retuning does not confirm this channel. */
+    if (!zone_acked(s_active)) {
         probe_channel(z->bond.mac, ch);
-        if (!zone_online(s_active)) return SWEEP_MISS;
+        if (!zone_acked(s_active)) return SWEEP_MISS;
     }
     s_channel = ch;
     s_sweeping = false;
@@ -990,7 +998,7 @@ static void do_zone_switch(int ni) {
         lvgl_port_unlock();
     }
     zone_t *z = &s_z[ni];
-    if (espnow_switch_warm(z->synced, zone_online(ni), zone_rx_stale(ni))) {
+    if (espnow_switch_warm(z->synced, zone_acked(ni), zone_rx_stale(ni))) {
         bool xch = zone_cross_channel(ni);
         if (xch && z->bond.last_channel)
             retune_adopt(z->bond.last_channel, "warm switch");
@@ -1126,7 +1134,7 @@ static void link_task(void *arg) {
                 wasHeld = true;
                 heldOnline = 0;
                 for (int i = 0; i < s_zn; i++)
-                    if (zone_online(i)) heldOnline |= 1u << i;
+                    if (zone_acked(i)) heldOnline |= 1u << i;
             }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
@@ -1197,7 +1205,7 @@ static void link_task(void *arg) {
         }
         for (int i = 0; i < s_zn; i++) {
             uint8_t ach = s_z[i].lastAckCh;
-            if (zone_online(i) && ach && s_z[i].bond.last_channel != ach) {
+            if (zone_acked(i) && ach && s_z[i].bond.last_channel != ach) {
                 ESP_LOGI(TAG, "zone %d channel heal %u -> %u", i,
                          s_z[i].bond.last_channel, ach);
                 s_z[i].bond.last_channel = ach;

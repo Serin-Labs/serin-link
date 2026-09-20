@@ -194,7 +194,63 @@ static void test_switch_cold_when_rx_stale(void) {
     assert(!espnow_switch_warm(true, true, true));
 }
 
+static void test_fresh_controller_reply_survives_missed_radio_acks(void) {
+    /* Observed: OFFLINE with ACK age 4191 ms but RX age only 191 ms. */
+    const uint32_t now = 82538;
+    assert(espnow_link_fresh(now, now - 4191, ESPNOW_ACK_WIN_ACTIVE_MS,
+                            now - 191));
+    assert(!espnow_ack_fresh(now, now - 4191, ESPNOW_ACK_WIN_ACTIVE_MS));
+}
+
+static void test_reply_evidence_expires_without_hiding_silence(void) {
+    const uint32_t now = 500000;
+    assert(espnow_link_fresh(now, 0, ESPNOW_ACK_WIN_ACTIVE_MS,
+                            now - ESPNOW_ACK_WIN_ACTIVE_MS + 1));
+    assert(!espnow_link_fresh(now, 0, ESPNOW_ACK_WIN_ACTIVE_MS,
+                             now - ESPNOW_ACK_WIN_ACTIVE_MS));
+    assert(!espnow_link_fresh(now, now - 10000, ESPNOW_ACK_WIN_ACTIVE_MS, 0));
+    assert(!espnow_link_fresh(0, 0, ESPNOW_ACK_WIN_ACTIVE_MS, 0));
+}
+
+static void test_reply_does_not_extend_background_ack_window(void) {
+    const uint32_t now = 500000;
+    assert(espnow_link_fresh(now, now - 10000, ESPNOW_ACK_WIN_BG_MS, 0));
+    assert(!espnow_link_fresh(now, 0, ESPNOW_ACK_WIN_BG_MS, now - 10000));
+}
+
+static void test_reply_freshness_wraparound(void) {
+    const uint32_t last_rx = UINT32_MAX - 1000;
+    assert(espnow_link_fresh(500, 0, ESPNOW_ACK_WIN_ACTIVE_MS, last_rx));
+    assert(!espnow_link_fresh(last_rx + ESPNOW_ACK_WIN_ACTIVE_MS,
+                             0, ESPNOW_ACK_WIN_ACTIVE_MS, last_rx));
+}
+
+static void test_only_complete_compatible_state_is_contact(void) {
+    uint8_t frame[sizeof(struct sl2_state_pkt)] = {SL2_PKT_STATE, SL2_PROTO_VERSION};
+    assert(espnow_state_reply(frame, sizeof frame));
+    assert(espnow_state_reply(frame, SL2_STATE_MIN_LEN));
+    assert(!espnow_state_reply(frame, SL2_STATE_MIN_LEN - 1));
+    assert(!espnow_state_reply(NULL, sizeof frame));
+    frame[1] = SL2_PROTO_MIN_COMPAT - 1;
+    assert(!espnow_state_reply(frame, sizeof frame));
+
+    /* This header promises an absent catalog entry and is rejected later.
+     * It must not refresh the timestamp used to keep the connection online. */
+    struct sl2_room_catalog_resp_hdr catalog = {
+        .type = SL2_PKT_ROOM_CATALOG_RESP, .version = SL2_PROTO_VERSION, .count = 1
+    };
+    assert(!espnow_state_reply((const uint8_t *)&catalog, sizeof catalog));
+    frame[0] = SL2_PKT_INFO;
+    frame[1] = SL2_PROTO_VERSION;
+    assert(!espnow_state_reply(frame, sizeof frame));
+}
+
 int main(void) {
+    test_only_complete_compatible_state_is_contact();
+    test_fresh_controller_reply_survives_missed_radio_acks();
+    test_reply_evidence_expires_without_hiding_silence();
+    test_reply_does_not_extend_background_ack_window();
+    test_reply_freshness_wraparound();
     test_not_synced_never_stale();
     test_fresh_rx_not_stale();
     test_silent_app_is_stale();
