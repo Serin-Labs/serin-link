@@ -12,7 +12,7 @@
 #include <string.h>
 
 typedef enum { WZ_HIDDEN, WZ_STARTING, WZ_JOINQR, WZ_DONE, WZ_HK, WZ_PAIRED, WZ_QR,
-               WZ_IPQR
+               WZ_IPQR, WZ_CANCELLING, WZ_CANCEL_FAILED, WZ_RECOVERY, WZ_LEAVE
              } wz_state_t;
 #define WZ_START_TIMEOUT_S 15
 #define WZ_CHANGE_QR_TIMEOUT_S 540
@@ -31,11 +31,16 @@ static struct {
     bool saw_ap;
     bool saw_unpaired;
     bool change;
+    bool cancellable;
+    bool exit_home;
+    uint32_t session;
     bool from_settings;
     bool home_entry;
     uint8_t wait_s;
     uint16_t qr_s;
 } WZ;
+/* UI correlation only. The radio worker maps each entry to a random wire token. */
+static uint32_t s_wifi_session;
 
 const char *ui_wifi_face(void)
 {
@@ -47,6 +52,10 @@ const char *ui_wifi_face(void)
     case WZ_PAIRED:   return "paired";
     case WZ_QR:       return "hkqr";
     case WZ_IPQR:     return "ipqr";
+    case WZ_CANCELLING: return "cancelling";
+    case WZ_CANCEL_FAILED: return "cancel_failed";
+    case WZ_RECOVERY: return "recovery";
+    case WZ_LEAVE: return "leave";
     default:          return "hidden";
     }
 }
@@ -56,6 +65,12 @@ static void wifi_wizard_render(void);
 static void wifi_ip_qr_entry(void);
 void refresh_wifi(void);
 static void wifi_tick_cb(lv_timer_t *t);
+static void wifi_cancel_begin(void);
+static void wifi_request_setup(void)
+{
+    if (WZ.cancellable) notify_wifi_setup_session(WZ.session);
+    else notify_wifi_setup();
+}
 
 static bool home_pairing_supported(void)
 {
@@ -69,7 +84,7 @@ static bool wifi_offer_pairing(void)
 
 static void wifi_finish(void)
 {
-    if (WZ.from_settings) settings_land(SET_WIFI);
+    if (WZ.from_settings && !WZ.exit_home) settings_land(SET_WIFI);
     else                  ui_show_screen(SCREEN_THERMOSTAT);
 }
 
@@ -103,6 +118,8 @@ void wifi_setup_entry(void)
     WZ.saw_ap = s_state.wifi_setup_ap;
     WZ.saw_unpaired = false;
     WZ.change = false;
+    WZ.cancellable = false;
+    WZ.exit_home = false;
     WZ.from_settings = from_settings;
     WZ.home_entry = false;
     WZ.wait_s = 0;
@@ -120,11 +137,15 @@ void wifi_change_begin(void)
     WZ.saw_ap = s_state.wifi_setup_ap;
     WZ.saw_unpaired = false;
     WZ.change = true;
+    WZ.cancellable = (s_caps.features & SL2_FEAT_WIFI_SETUP_CANCEL) != 0;
+    WZ.exit_home = false;
+    if (++s_wifi_session == 0) ++s_wifi_session;
+    WZ.session = s_wifi_session;
     WZ.from_settings = true;
     WZ.home_entry = false;
     WZ.wait_s = 0;
     WZ.qr_s = 0;
-    notify_wifi_setup();
+    wifi_request_setup();
     WZ.st = s_state.wifi_setup_ap ? WZ_JOINQR : WZ_STARTING;
     wifi_tick_arm();
     wifi_wizard_render();
@@ -136,16 +157,26 @@ static void wifi_tick_cb(lv_timer_t *t)
     note_activity();
     if (WZ.st == WZ_STARTING && WZ.wait_s < WZ_START_TIMEOUT_S) {
         WZ.wait_s++;
-        notify_wifi_setup();
+        wifi_request_setup();
         if (WZ.wait_s == WZ_START_TIMEOUT_S)
             wifi_wizard_render();
+    }
+    if (WZ.st == WZ_CANCELLING) {
+        if (++WZ.wait_s >= WZ_START_TIMEOUT_S) {
+            WZ.st = WZ_CANCEL_FAILED;
+            wifi_wizard_render();
+        } else notify_wifi_cancel(WZ.session);
+        return;
     }
     if (WZ.st == WZ_DONE && wifi_offer_pairing() && ++WZ.wait_s >= 3) {
         wifi_complete();
         return;
     }
     if (WZ.st == WZ_JOINQR && WZ.change && ++WZ.qr_s >= WZ_CHANGE_QR_TIMEOUT_S) {
-        ui_show_screen(SCREEN_THERMOSTAT);
+        if (WZ.cancellable) {
+            WZ.exit_home = true;
+            wifi_cancel_begin();
+        } else ui_show_screen(SCREEN_THERMOSTAT);
         return;
     }
     if (((WZ.st == WZ_JOINQR && !WZ.change) || WZ.st == WZ_QR || WZ.st == WZ_HK ||
@@ -195,16 +226,39 @@ static void wifi_wizard_render(void)
     if (!needs_tick && WZ.tick) { lv_timer_delete(WZ.tick); WZ.tick = NULL; }
 
     switch (WZ.st) {
+    case WZ_CANCELLING:
+    case WZ_CANCEL_FAILED:
+    case WZ_RECOVERY:
+    case WZ_LEAVE:
+        lv_label_set_text(WZ.title, WZ.st == WZ_CANCELLING ? "Cancelling setup"
+            : WZ.st == WZ_CANCEL_FAILED ? "No confirmation" : "Setup hotspot open");
+        lv_obj_align(WZ.title, LV_ALIGN_CENTER, 0, SERIN_PX(14));
+        wz_icon(&hero_hotspot, 80, 78, SET_COL[SET_WIFI]);
+        lv_label_set_text(WZ.body, WZ.st == WZ_CANCELLING
+            ? "Waiting for the controller."
+            : WZ.st == WZ_CANCEL_FAILED
+            ? "Setup may still be open."
+            : WZ.st == WZ_RECOVERY
+            ? "Home Wi-Fi is unavailable.\nUse the hotspot to reconnect."
+            : "Closes after about 10 minutes\nwhen home Wi-Fi is connected.");
+        lv_obj_align(WZ.body, LV_ALIGN_CENTER, 0, SERIN_PX(86));
+        lv_obj_remove_flag(WZ.body, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(WZ.hint, WZ.st == WZ_CANCEL_FAILED
+            ? H2(H_PRESS("retry"), H_HOLD("go back"))
+            : WZ.st == WZ_CANCELLING ? "" : H_PRESS("go back"));
+        lv_obj_remove_flag(WZ.hint, LV_OBJ_FLAG_HIDDEN);
+        arim_progress(WZ.ring, 40, SET_COL[SET_WIFI], true);
+        break;
     case WZ_STARTING:
         lv_label_set_text(WZ.title, "Set up Wi-Fi");
         lv_obj_align(WZ.title, LV_ALIGN_CENTER, 0, SERIN_PX(14));
         wz_icon(&hero_hotspot, 80, 78, SET_COL[SET_WIFI]);
         if (WZ.wait_s >= WZ_START_TIMEOUT_S) {
             lv_label_set_text(WZ.body, "The controller didn't respond.");
-            lv_label_set_text(WZ.hint, H2(H_PRESS("retry"), H_HOLD("cancel")));
+            lv_label_set_text(WZ.hint, WZ.cancellable ? H2(H_PRESS("retry"), H_HOLD("cancel")) : H2(H_PRESS("retry"), H_HOLD("go back")));
         } else {
             lv_label_set_text(WZ.body, "Starting the setup hotspot\xE2\x80\xA6");
-            lv_label_set_text(WZ.hint, H_HOLD("cancel"));
+            lv_label_set_text(WZ.hint, WZ.cancellable ? H_HOLD("cancel") : H_HOLD("go back"));
         }
         lv_obj_align(WZ.body, LV_ALIGN_CENTER, 0, SERIN_PX(90));
         lv_obj_remove_flag(WZ.body, LV_OBJ_FLAG_HIDDEN);
@@ -230,7 +284,7 @@ static void wifi_wizard_render(void)
         lv_obj_remove_flag(WZ.instr, LV_OBJ_FLAG_HIDDEN);
         if (WZ.change) {
             lv_obj_align(WZ.hint, LV_ALIGN_BOTTOM_MID, 0, -SERIN_PX(28));
-            lv_label_set_text(WZ.hint, H_PRESS("cancel"));
+            lv_label_set_text(WZ.hint, WZ.cancellable ? H_PRESS("cancel") : H_PRESS("go back"));
             lv_obj_remove_flag(WZ.hint, LV_OBJ_FLAG_HIDDEN);
         }
         arim_progress(WZ.ring, ARIM_SPAN_DEG / 2, SET_COL[SET_WIFI], true);
@@ -267,7 +321,7 @@ static void wifi_wizard_render(void)
             lv_obj_align(WZ.code, LV_ALIGN_BOTTOM_MID, 0, -SERIN_PX(84));
         } else {
             lv_label_set_text(WZ.body, s->wifi_setup_avail
-                ? "Waiting for the Serin controller\xE2\x80\xA6"
+                ? "Waiting for the Serin Controller\xE2\x80\xA6"
                 : (hk_protocol() == HK_PROTO_HOMEKIT
                     ? "Enter this code in the Home app."
                     : "Enter this code in your home app."));
@@ -315,10 +369,14 @@ void wifi_encoder(int d) { (void)d; }
 void wifi_press(void)
 {
     switch (WZ.st) {
+    case WZ_CANCELLING: break;
+    case WZ_CANCEL_FAILED: wifi_cancel_begin(); break;
+    case WZ_RECOVERY:
+    case WZ_LEAVE: wifi_finish(); break;
     case WZ_STARTING:
         if (WZ.wait_s >= WZ_START_TIMEOUT_S) {
             WZ.wait_s = 0;
-            notify_wifi_setup();
+            wifi_request_setup();
             wifi_wizard_render();
         }
         break;
@@ -345,6 +403,10 @@ void wifi_press(void)
 
 void wifi_back(void)
 {
+    if (WZ.st == WZ_CANCELLING) return;
+    if (WZ.st == WZ_CANCEL_FAILED || WZ.st == WZ_RECOVERY || WZ.st == WZ_LEAVE) {
+        wifi_finish(); return;
+    }
     if (WZ.st == WZ_JOINQR && !WZ.change) { wifi_finish(); return; }
     if (WZ.st == WZ_HK) { wifi_finish(); return; }
     if (WZ.st == WZ_PAIRED) { wifi_press(); return; }
@@ -451,8 +513,39 @@ void refresh_wifi(void)
 static void wifi_wizard_back_cb(lv_event_t *e)
 {
     (void)e;
+    if (WZ.change && (WZ.st == WZ_STARTING || WZ.st == WZ_JOINQR)) {
+        if (WZ.cancellable) wifi_cancel_begin();
+        else { WZ.st = WZ_LEAVE; wifi_wizard_render(); }
+        return;
+    }
     if (!WZ.from_settings) { ui_show_screen(SCREEN_THERMOSTAT); return; }
     settings_land(WZ.home_entry ? SET_HOMEKIT : SET_WIFI);
+}
+
+static void wifi_cancel_begin(void)
+{
+    WZ.st = WZ_CANCELLING;
+    WZ.wait_s = 0;
+    wifi_wizard_render();
+    notify_wifi_cancel(WZ.session);
+}
+
+void ui_wifi_cancel_result(uint32_t session, uint8_t status)
+{
+    if (s_cur != SCREEN_WIFI || session != WZ.session ||
+        (WZ.st != WZ_CANCELLING && WZ.st != WZ_CANCEL_FAILED)) return;
+    switch (status) {
+    case SL2_WIFI_CANCEL_CLOSED: wifi_finish(); return;
+    case SL2_WIFI_CANCEL_WAITING:
+        WZ.st = WZ_CANCELLING;
+        WZ.wait_s = 0;
+        break;
+    case SL2_WIFI_CANCEL_RECOVERY: WZ.st = WZ_RECOVERY; break;
+    case SL2_WIFI_CANCEL_STALE:
+    case SL2_WIFI_CANCEL_UNSUPPORTED: WZ.st = WZ_CANCEL_FAILED; break;
+    default: return;
+    }
+    wifi_wizard_render();
 }
 
 void homekit_qr_entry(void)

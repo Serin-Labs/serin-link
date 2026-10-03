@@ -46,6 +46,8 @@ ICONS = [
     ("digit_4", [46, 66]), ("digit_5", [46, 66]), ("digit_6", [46, 66]),
     ("digit_7", [46, 66]),
     ("serin_logo", [45, 60, 130, 160]),
+    ("room_heatpump", [45, 60]), ("room_link", [45, 60]),
+    ("room_sensor", [45, 60]),
     ("hero_alert", [16, 32, 36]),
     ("hero_hotspot", [80]),
     ("hero_batt", [104]),

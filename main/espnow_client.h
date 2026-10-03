@@ -27,6 +27,8 @@ bool espnow_client_radio_off(bool off);
 
 bool espnow_client_worker_submit(void (*fn)(void *), void *arg);
 void espnow_client_wifi_setup(void);
+void espnow_client_wifi_setup_session(uint32_t session);
+void espnow_client_wifi_cancel(uint32_t session);
 
 bool espnow_client_link_alive(void);
 

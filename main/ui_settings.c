@@ -71,7 +71,7 @@ void settings_turn(int delta)
 }
 
 static const char *SET_NAME[SET_N] = {
-    "Brightness", "Wi-Fi", "Link", "HomeKit", "Room Sensor", "About", "Advanced", "Back"
+    "Brightness", "Wi-Fi", "Controller", "HomeKit", "Room Sensor", "About", "Advanced", "Back"
 };
 
 static const char *set_name(int i)
@@ -138,9 +138,6 @@ static void chip_status(lv_obj_t *dot, lv_obj_t *lbl, uint32_t col, const char *
     lv_label_set_text(lbl, txt);
     lv_obj_set_style_text_color(lbl, lv_color_hex(col), 0);
 }
-
-static void link_node_press_cb(lv_event_t *e)   { (void)e; s_set_sel = SET_LINK; refresh_settings(); ui_button_down(); }
-static void link_node_release_cb(lv_event_t *e) { (void)e; ui_button_up(); }
 
 static void bright_track_cb(lv_event_t *e)
 {
@@ -240,7 +237,7 @@ void build_settings(void)
 
     SS.center = c;
     static const touch_floor_arg_t k_lrow_tf = { 0, "SS.lrow" };
-    SS.lrow = settings_status_row(c, SET_LINK, "Linked", &k_lrow_tf, &SS.ldot, &SS.lconn);
+    SS.lrow = settings_status_row(c, SET_LINK, "Connected", &k_lrow_tf, &SS.ldot, &SS.lconn);
 
     SS.lmeta = mklabel(c, FONT_STATUS, COL_DIM, "");
 
@@ -266,9 +263,6 @@ void build_settings(void)
     SS.holdArc = rim_arc(p, SET_LINK_ANG, SERIN_IND_HALF_DEG,
                          SERIN_PX(SERIN_RIM_W_SEL), COL_ALERT_NOLINK);
     lv_obj_add_flag(SS.holdArc, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(SETR.node[set_pos(SET_LINK)], link_node_press_cb,   LV_EVENT_PRESSED,  NULL);
-    lv_obj_add_event_cb(SETR.node[set_pos(SET_LINK)], link_node_release_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(SETR.node[set_pos(SET_LINK)], link_node_release_cb, LV_EVENT_PRESS_LOST, NULL);
 }
 
 enum { R_BRTRACK, R_BRPCT, R_STATUS, R_WROW, R_HKCODE, R_HKROW, R_LROW, R_LMETA,
@@ -313,7 +307,7 @@ void refresh_settings(void)
         const hvac_state_t *s = &s_state;
         ss_show(R_WROW);
         const char *wtxt; uint32_t wcol;
-        if (!s_link.online)         { wtxt = "No link";   wcol = COL_ALERT_NOLINK; }
+        if (!s_link.online)         { wtxt = "Controller offline"; wcol = COL_ALERT_NOLINK; }
         else if (s->wifi_connected) { wtxt = "Connected"; wcol = COL_GREEN; }
         else                        { wtxt = "Offline";   wcol = COL_GREY; }
         chip_status(SS.wdot, SS.wconn, wcol, wtxt);
@@ -338,7 +332,7 @@ void refresh_settings(void)
         bool paired = s->hk_paired > 0;
         const char *hktxt; uint32_t hkcol;
         if (!s_link.online) {
-            hktxt = "No link";       hkcol = COL_ALERT_NOLINK;
+            hktxt = "Controller offline"; hkcol = COL_ALERT_NOLINK;
         } else if (paired) {
             hktxt = "Paired";        hkcol = COL_GREEN;
         } else {
@@ -356,7 +350,7 @@ void refresh_settings(void)
         ss_show(R_LROW);
         uint32_t lc; const char *lt;
         if (s_link.online)   { lc = COL_GREEN;        lt = "Connected"; }
-        else                 { lc = COL_ALERT_NOLINK; lt = "No link";   }
+        else                 { lc = COL_ALERT_NOLINK; lt = "Offline";   }
         chip_status(SS.ldot, SS.lconn, lc, lt);
         if (s_zn_ui >= 1) {
             char nm[48]; zone_disp_name(s_zactive, nm, sizeof nm);
@@ -384,7 +378,10 @@ void refresh_settings(void)
             else
                 lv_label_set_text(SS.roomSrc, "Active temperature source");
             ss_show(R_ROOMSRC);
-            lv_label_set_text(SS.hint, H_PRESS("choose source"));
+            /* With no source list a push opens an explanation, not the
+             * picker, so don't promise one. */
+            if (room_source_can_enter()) lv_label_set_text(SS.hint, H_PRESS("choose source"));
+            else                         ss_hide(R_HINT);
         } else {
             chip_status(SS.sydot, SS.syconn, COL_GREY, "Internal");
             lv_label_set_text(SS.roomSrc, "Controller does not offer source selection");

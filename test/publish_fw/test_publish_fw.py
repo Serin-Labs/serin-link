@@ -158,21 +158,20 @@ class StagingTests(unittest.TestCase):
                         ignore=shutil.ignore_patterns("__pycache__"))
         (distribution / "scripts/keys/serin-link-release.pub").write_bytes(
             (self.keys / "release.pub").read_bytes())
-        archive = []
-        for channel, version in (("stable", "0.1.6"), ("beta", "0.1.7-beta.1")):
-            folder = distribution / "firmware/link"
-            if channel == "beta":
-                folder /= "beta"
-            (folder / "link15").mkdir(parents=True)
-            ciphertext = f"archived encrypted {channel} release".encode()
-            (folder / "link15/app_secure.bin").write_bytes(ciphertext)
-            build = {"board": "link15", "path": "link15/app_secure.bin", "size": 8192,
-                     "enc_size": len(ciphertext), "sha256": "0" * 64}
+        for channel, version, image in (("stable", "0.1.6", "release"),
+                                        ("beta", "0.1.7-beta.1", "beta")):
+            folder = distribution / "firmware/link/ota" / channel
+            folder.mkdir(parents=True)
+            builds = []
+            for board in ("link15", "link21"):
+                name = f"{board}-app.bin"
+                data = self.signed[image]
+                (folder / name).write_bytes(data)
+                builds.append({"board": board, "path": name, "size": len(data),
+                               "sha256": hashlib.sha256(data).hexdigest()})
             (folder / "manifest.json").write_text(json.dumps({
-                "name": "Legacy Link", "version": version, "channel": channel, "builds": [build]}))
-            archive.append({"version": version, "build": build,
-                            "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest()})
-        (distribution / "scripts/legacy-link-artifacts.json").write_text(json.dumps(archive))
+                "name": "Serin Link", "version": version, "channel": channel,
+                "builds": builds}, indent=2) + "\n")
         other = distribution / "firmware/esphome"
         other.mkdir()
         (other / "firmware.bin").write_bytes(b"other product")
@@ -187,7 +186,7 @@ class StagingTests(unittest.TestCase):
         return {str(path.relative_to(distribution)): path.read_bytes()
                 for path in (distribution / "firmware").rglob("*") if path.is_file()}
 
-    def test_public_distribution_preserves_encrypted_feeds_and_other_products(self):
+    def test_public_distribution_preserves_other_channel_and_products(self):
         distribution = self.make_distribution()
         previous = self.distribution_files(distribution)
         code, output = self.run_publish("--no-build", "--distribution", distribution)
@@ -202,7 +201,9 @@ class StagingTests(unittest.TestCase):
             self.assertNotIn("enc_size", build)
             self.assertEqual((stage / build["path"]).read_bytes(), self.signed["release"])
         after = self.distribution_files(distribution)
-        self.assertEqual({name: after[name] for name in previous}, previous)
+        untouched = {name: data for name, data in previous.items()
+                     if not name.startswith("firmware/link/ota/stable/")}
+        self.assertEqual({name: after[name] for name in untouched}, untouched)
 
     def test_builtin_urls_resolve_to_staged_channels_without_cross_channel_changes(self):
         distribution = self.make_distribution()
@@ -247,6 +248,20 @@ class StagingTests(unittest.TestCase):
         code, output = self.run_publish("--no-build", "--version", "0.1.7", "--distribution", distribution)
         self.assertNotEqual(code, 0, output)
         self.assertIn("sha256 does not match", output)
+        self.assertEqual(self.distribution_files(distribution), before)
+
+    def test_retired_encrypted_feed_prevents_publication(self):
+        distribution = self.make_distribution()
+        legacy = distribution / "firmware/link/manifest.json"
+        legacy.write_text(json.dumps({
+            "name": "Retired encrypted Link", "version": "0.1.6", "builds": [{
+                "board": "link15", "path": "ota/stable/link15-app.bin",
+                "size": len(self.signed["release"]), "enc_size": 123,
+                "sha256": hashlib.sha256(self.signed["release"]).hexdigest()}]}))
+        before = self.distribution_files(distribution)
+        code, output = self.run_publish("--no-build", "--distribution", distribution)
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("unknown Link OTA channel directory", output)
         self.assertEqual(self.distribution_files(distribution), before)
 
     def test_distribution_refuses_cached_build_with_old_update_urls(self):
@@ -309,11 +324,17 @@ class StagingTests(unittest.TestCase):
                                         "--out", distribution / "firmware/link/ota")
         self.assertNotEqual(code, 0, output)
         self.assertEqual(self.distribution_files(distribution), before)
-        (distribution / "firmware/link/ota").symlink_to(distribution / "firmware/link", target_is_directory=True)
-        code, output = self.run_publish("--no-build", "--distribution", distribution)
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("symlink", output)
-        (distribution / "firmware/link/ota").unlink()
+        ota = distribution / "firmware/link/ota"
+        saved_ota = self.root / "saved-ota"
+        ota.rename(saved_ota)
+        try:
+            ota.symlink_to(distribution / "firmware/link", target_is_directory=True)
+            code, output = self.run_publish("--no-build", "--distribution", distribution)
+            self.assertNotEqual(code, 0, output)
+            self.assertIn("symlink", output)
+        finally:
+            ota.unlink()
+            saved_ota.rename(ota)
         self.assertEqual(self.distribution_files(distribution), before)
 
     def test_explicit_matching_private_key_allows_staging(self):

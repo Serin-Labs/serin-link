@@ -178,6 +178,16 @@ void ui_set_on_forget(void (*cb)(void)) { s_on_forget = cb; }
 static void (*s_on_wifi_setup)(void);
 void ui_set_on_wifi_setup(void (*cb)(void)) { s_on_wifi_setup = cb; }
 void notify_wifi_setup(void) { if (s_on_wifi_setup) s_on_wifi_setup(); }
+static void (*s_on_wifi_setup_session)(uint32_t);
+static void (*s_on_wifi_cancel)(uint32_t);
+void ui_set_on_wifi_setup_session(void (*cb)(uint32_t)) { s_on_wifi_setup_session = cb; }
+void ui_set_on_wifi_cancel(void (*cb)(uint32_t)) { s_on_wifi_cancel = cb; }
+void notify_wifi_setup_session(uint32_t session) {
+    if (s_on_wifi_setup_session) s_on_wifi_setup_session(session);
+}
+void notify_wifi_cancel(uint32_t session) {
+    if (s_on_wifi_cancel) s_on_wifi_cancel(session);
+}
 
 void apply_brightness(void)
 {
@@ -839,10 +849,13 @@ static bool dial_gesture_tail(void)
     return s_dial_gest && !uig_click_is_tap(s_dial_gest);
 }
 
+static bool lock_refuse(void);
+
 static void band_edge_click_cb(lv_event_t *e)
 {
     if (dial_gesture_tail()) return;
     note_activity();
+    if (lock_refuse()) return;
     s_band_edge[s_zactive] = (lv_event_get_user_data(e) != NULL);
     band_heroes();
     s_dispSet10 = active_edit_dd();
@@ -1492,7 +1505,7 @@ static void refresh_blank_offline(dial_face_t face)
     bool breathe;
     /* Copy convention: alert chips and takeovers are ALL CAPS; titles are sentence case. */
     switch (face) {
-        case DIAL_LINK_OFF:  label = "LINK\nOFFLINE";  col = COL_ALERT_NOLINK;    alertBadge = true;  breathe = false; break;
+        case DIAL_LINK_OFF:  label = "CONTROLLER\nOFFLINE";  col = COL_ALERT_NOLINK;    alertBadge = true;  breathe = false; break;
         case DIAL_CN105_OFF: label = "HEAT PUMP\nOFFLINE"; col = COL_ALERT_WARN;  alertBadge = true;  breathe = true;  break;
         default:             label = "Set up Wi-Fi";  col = SET_COL[SET_WIFI];   alertBadge = true;  breathe = true;  break;
     }
@@ -1540,7 +1553,7 @@ static void refresh_pairing_face(void)
 
     if (ok) {
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(T.pairTitle, "Linked!");
+        lv_label_set_text(T.pairTitle, "Paired");
         lv_obj_add_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(T.pairHint, "Restarting");
         lv_obj_remove_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
@@ -1549,7 +1562,7 @@ static void refresh_pairing_face(void)
         pair_badge(&hero_alert, 32, COL_ALERT_NOLINK);
         lv_label_set_text(T.pairTitle, "Pairing failed");
         lv_label_set_text(T.pairInstr,
-            "Check the Serin controller is powered and in pairing mode.");
+            "Check the Serin Controller is powered and in pairing mode.");
         lv_obj_remove_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
         btn1 = "Retry";
@@ -1568,7 +1581,7 @@ static void refresh_pairing_face(void)
         pair_badge(&set_link_row, 60, COL_ALERT_NOLINK);
         lv_label_set_text(T.pairTitle, "Controller reset");
         lv_label_set_text(T.pairInstr,
-            "The Serin controller was reset. Forget its zone, then pair again.");
+            "The Serin Controller was reset. Forget its zone, then pair again.");
         lv_obj_remove_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
         btn1 = zones_can_enter() ? "Zones" : NULL;
@@ -1922,6 +1935,7 @@ void ui_hold_abort(void) { hold_cancel(); }
 static void hold_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    if (s_hold_target == HOLD_NONE) { hold_cancel(); return; }
     const hold_spec_t *spec = &HOLD_SPECS[s_hold_target];
     uint32_t col = (s_hold_target == HOLD_LINK_FORGET) ? COL_ALERT_NOLINK
                  : (s_hold_target == HOLD_WIFI_CHANGE) ? SET_COL[SET_WIFI]
@@ -1965,7 +1979,12 @@ void ui_button_down(void)
     s_hold_target = HOLD_NONE;
     for (int i = 0; i < (int)(sizeof HOLD_SPECS / sizeof *HOLD_SPECS); i++)
         if (HOLD_SPECS[i].armed()) { s_hold_target = (hold_id_t)i; break; }
-    if (s_hold_target == HOLD_NONE) return;
+    if (s_hold_target == HOLD_NONE) {
+        /* A second press (touch while the knob is held) found nothing armed:
+         * stop the first press's timer rather than let it tick with no spec. */
+        if (s_hold_timer) hold_cancel();
+        return;
+    }
     s_hold_ms = 0;
     if (!s_hold_timer) s_hold_timer = lv_timer_create(hold_timer_cb, SERIN_HOLD_TICK_MS, NULL);
 }
@@ -2102,7 +2121,7 @@ static const screen_ops_t SCREEN_OPS[SCREEN_COUNT] = {
                             .build = build_settings,
                             .enter = settings_enter, .refresh = refresh_settings ,
                             .caps_changed = settings_caps_changed },
-    [SCREEN_UPDATE]     = { .press = ota_action,   .hold = update_hold,
+    [SCREEN_UPDATE]     = { .turn = update_turn,   .press = update_press, .hold = update_hold,
                             .build = build_update, .refresh = refresh_update,
                             .transient = true },
     [SCREEN_ABOUT]      = { .turn = about_turn,    .press = about_press,
@@ -2134,9 +2153,15 @@ static void refresh_cur_screen(void)
     if (SCREEN_OPS[s_cur].refresh) SCREEN_OPS[s_cur].refresh();
 }
 
+static lv_obj_t   *s_leaver;
+static void leaver_settle(void);
+
 void screen_rebuild(screen_id_t id)
 {
     const screen_ops_t *op = &SCREEN_OPS[id];
+    /* A fade may still own this panel as its leaver; settle it first so the
+     * pending dip/fade callback never touches the object deleted below. */
+    if (s_leaver && s_leaver == s_panel[id]) leaver_settle();
     if (s_panel[id]) {
         if (op->destroy) op->destroy();
         lv_obj_delete(s_panel[id]);
@@ -2151,7 +2176,6 @@ void screen_rebuild(screen_id_t id)
     }
 }
 
-static lv_obj_t   *s_leaver;
 static screen_id_t s_leaver_id;
 static screen_id_t s_arriver_id;
 
@@ -2332,6 +2356,7 @@ static void pill_click_cb(lv_event_t *e)
     if (dial_gesture_tail()) return;
     switch (thermo_face()) {
         case DIAL_UNPAIRED:  pair_face_press();                 break;
+        case DIAL_WIFI_OFF:  wifi_setup_entry();                break;
         case DIAL_LINK_OFF:  offline_dialog_show(DIAL_LINK_OFF);  break;
         case DIAL_CN105_OFF: offline_dialog_show(DIAL_CN105_OFF); break;
         default:

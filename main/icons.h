@@ -25,6 +25,8 @@ extern const serin_icon_t set_lock, set_idle, set_reset, set_night,
 
 extern const serin_icon_t serin_logo;
 
+extern const serin_icon_t room_heatpump, room_link, room_sensor;
+
 extern const serin_icon_t hero_alert, hero_hotspot, hero_batt, hero_check;
 
 extern const serin_icon_t coach_arrow;

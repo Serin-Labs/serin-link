@@ -41,117 +41,62 @@ expect_not "$LOG" '^CMD: room_source_id=' 'removed source committed another row'
 expect "$LOG" 'screen=settings.*set_sel=heatpump' 'Back after source removal did not return to Room Sensor settings'
 
 # An empty replacement happens while this lazy screen is active.  It still has
-# one safe Back row and must not dereference a vanished option.
+# one safe Back stop and must not dereference a vanished option.
 LOG=$(run 'roomsrc_ids 10 10:Internal; screen room_source; roomsrc_ids 10 -; wait 150; labels; hitmap; press; wait 150; info')
 expect "$LOG" 'text=No sensors available' 'empty catalog did not state that no sensors remain'
 expect "$LOG" 'text=Back$' 'empty catalog did not keep Back available'
 expect_not "$LOG" '^CMD: room_source_id=' 'empty catalog sent a source ID'
 expect "$LOG" 'screen=settings.*set_sel=heatpump' 'empty-catalog Back did not land on Room Sensor settings'
 
-# Rows are separated in the list even when one is clipped by scrolling.
-LOG=$(run 'roomsrc_ids 10 10:Internal,20:Bedroom,30:Hallway; screen room_source; wait 150; hitmap')
-floor=$(sed -n 's/^hitmap floor=\([0-9][0-9]*\).*/\1/p' <<<"$LOG")
-row_width=$(awk '
-    /text=(Internal|Bedroom|Hallway|Back)$/ {
-        for (i = 1; i <= NF; i++) if ($i ~ /^drawn=/) {
-            split(substr($i, 7), a, "x")
-            if (!min || a[1] < min) min = a[1]
-        }
-    }
-    END { if (min) print min }
-' <<<"$LOG")
-if [[ -z "$floor" || -z "$row_width" ]] || ! awk -v row_width="$row_width" '
-    /text=(Internal|Bedroom|Hallway|Back)$/ {
-        h = y1 = y2 = -1
-        for (i = 1; i <= NF; i++) {
-            if ($i ~ /^h=/) { split($i, a, "="); h = a[2] }
-            if ($i ~ /^drawn=/) { split(substr($i, 7), a, "x"); w = a[1] }
-            if ($i ~ /^box=/)   { split(substr($i, 5), a, ","); y1 = a[2]; y2 = a[4] }
-        }
-        if (w != row_width) next
-        if (last_y2 >= 0 && y1 <= last_y2) bad = 1
-        last_y2 = y2
-        rows++
-    }
-    END { exit (rows == 4 && !bad) ? 0 : 1 }
-' <<<"$LOG"; then
-    echo "FAIL: picker row boxes overlap" >&2
-    fail=1
-fi
-
-# Each row becomes a fully visible physical target when focused, including Back.
-for target in '0 Internal' '1 Bedroom' '2 Hallway' '3 Back'; do
-    read -r turns label <<<"$target"
-    command='roomsrc_ids 10 10:Internal,20:Bedroom,30:Hallway; screen room_source'
-    for ((i = 0; i < turns; i++)); do command+='; turn 1'; done
-    LOG=$(run "$command; wait 150; hitmap")
-    height=$(awk -v label="$label" -v row_width="$row_width" '
-        $0 ~ /^hit / && $0 ~ ("text=" label "$") {
-            w = 0
-            for (i = 1; i <= NF; i++) {
-                if ($i ~ /^drawn=/) { split(substr($i, 7), a, "x"); w = a[1] }
-                if ($i ~ /^h=/) { split($i, a, "="); h = a[2] }
-            }
-            if (w == row_width) { print h; exit }
-        }
-    ' <<<"$LOG")
-    if [[ -z "$height" || "$height" -lt "$floor" ]]; then
-        echo "FAIL: focused $label row is below the physical touch floor" >&2
-        fail=1
-    fi
+# The four ring targets must apply their own source IDs. Back sits at the left, like the other firmware pickers.
+setup='roomsrc_ids 10 10:0:Internal,20:1:Bedroom,30:2:Link; screen room_source; wait 150'
+LOG=$(run "$setup; hitmap")
+disp=$(sed -n 's/^hitmap floor=[0-9]* disp=\([0-9]*\).*/\1/p' <<<"$LOG")
+# Cardinal stops in 480-space: Internal top, Bedroom right, Link bottom.
+for target in '240 54 10' '426 240 20' '240 426 30'; do
+    read -r x y id <<<"$target"
+    LOG=$(run "$setup; tap $((x * disp / 480)) $((y * disp / 480)); wait 150; info")
+    expect "$LOG" "^CMD: room_source_id=$id$" "rim tap did not choose source $id"
+    expect "$LOG" 'screen=settings.*set_sel=heatpump' 'rim tap did not return to Room Sensor settings'
 done
+LOG=$(run "$setup; tap $((54 * disp / 480)) $((disp / 2)); wait 150; info")
+expect_not "$LOG" '^CMD: room_source_id=' 'Back rim tap sent a source ID'
+expect "$LOG" 'screen=settings.*set_sel=heatpump' 'Back rim tap did not return to Room Sensor settings'
 
-# Full names remain in the labels, but their visible boxes are bounded.  The
-# selected room source and displayed zone use LVGL's delayed scroll mode to
-# reveal the rest of a name without changing the layout.
-# The wire field has 24 bytes, including the terminator used by the simulator.
+# Long focused names stay bounded and retain their full text for scrolling.
 room_name=ABCDEFGHIJKLMNOPQRSTUVW
-zone_name=ABCDEFGHIJKLMNOPQRSTUVWXYZ12345
 LOG=$(run "roomsrc_ids 10 10:$room_name; screen room_source; wait 150; labelbox $room_name")
 room_box=$(sed -n "s/^labelbox text=$room_name box=//p" <<<"$LOG")
-LOG=$(run "zones 2 0; zone 0 name=$zone_name; screen zones; wait 150; labelbox $zone_name")
-zone_box=$(sed -n "s/^labelbox text=$zone_name box=//p" <<<"$LOG")
-for bounded in "$room_box" "$zone_box"; do
-    IFS=, read -r x1 _ x2 _ <<<"$bounded"
-    if [[ -z "$x1" || -z "$x2" || $((x2 - x1 + 1)) -gt "$row_width" ]]; then
-        echo "FAIL: a long name can expand its layout instead of staying bounded" >&2
-        fail=1
-    fi
-done
-
-# A catalog long enough to scroll must stay where a finger left it.  Every
-# telemetry push refreshes the current screen, so a picker that re-centres on
-# its focused row during a refresh yanks the list away mid-scroll.
-overflow='roomsrc_ids 10 10:Internal,20:Bedroom,30:Hallway,40:Kitchen,50:Garage,60:Attic,70:Office,80:Porch'
-LOG=$(run "$overflow; screen room_source; wait 200; hitmap")
-mid_x=$(($(sed -n 's/^hitmap floor=[0-9][0-9]* disp=\([0-9][0-9]*\).*/\1/p' <<<"$LOG") / 2))
-row_mid_y() {   # vertical centre of the named row, which only a row box owns
-    awk -v label="$1" -v row_width="$row_width" '
-        $0 ~ /^hit / && $0 ~ ("text=" label "$") {
-            w = 0
-            for (i = 1; i <= NF; i++) {
-                if ($i ~ /^drawn=/) { split(substr($i, 7), a, "x"); w = a[1] }
-                if ($i ~ /^box=/)   { split(substr($i, 5), b, ",") }
-            }
-            if (w == row_width) { print int((b[2] + b[4]) / 2); exit }
-        }' <<<"$2"
-}
-drag_from=$(row_mid_y Hallway "$LOG")
-drag_to=$(row_mid_y Internal "$LOG")
-LOG=$(run "$overflow; screen room_source; wait 200; hitmap;
-           swipe $mid_x $drag_from $mid_x $drag_to 300; wait 800; hitmap;
-           state room_temp=71; wait 200; hitmap")
-mapfile -t back_box < <(sed -n 's/^hit .* box=\([-0-9,]*\) text=Back$/\1/p' <<<"$LOG")
-if [[ -z "$mid_x" || -z "$drag_from" || -z "$drag_to" || ${#back_box[@]} -ne 3 ]]; then
-    echo 'FAIL: could not read the picker geometry for the scroll check' >&2
-    fail=1
-elif [[ "${back_box[0]}" == "${back_box[1]}" ]]; then
-    echo 'FAIL: the swipe did not scroll the picker, so the check proves nothing' >&2
-    fail=1
-elif [[ "${back_box[1]}" != "${back_box[2]}" ]]; then
-    echo 'FAIL: a state refresh scrolled the picker away from where touch left it' >&2
+IFS=, read -r x1 _ x2 _ <<<"$room_box"
+if [[ -z "$x1" || -z "$x2" || $((x2 - x1 + 1)) -gt $(((310 * disp + 240) / 480)) ]]; then
+    echo 'FAIL: a long sensor name expands beyond the center' >&2
     fail=1
 fi
+
+# Preserve the zone-name regression: both pickers bound long names.
+zone_name=ABCDEFGHIJKLMNOPQRSTUVWXYZ12345
+LOG=$(run "zones 2 0; zone 0 name=$zone_name; screen zones; wait 150; labelbox $zone_name")
+zone_box=$(sed -n "s/^labelbox text=$zone_name box=//p" <<<"$LOG")
+IFS=, read -r x1 _ x2 _ <<<"$zone_box"
+if [[ -z "$x1" || -z "$x2" || $((x2 - x1 + 1)) -gt $(((310 * disp + 240) / 480)) ]]; then
+    echo 'FAIL: a long zone name expands beyond the center' >&2
+    fail=1
+fi
+
+# All twelve catalog entries remain reachable when more than seven sensors
+# need multiple rings. Turning back crosses the boundary in the other direction.
+overflow='roomsrc_ids 10 10:Internal,20:Bedroom,30:Hallway,40:Kitchen,50:Garage,60:Attic,70:Office,80:Porch,90:Den,100:Study,110:Loft,120:Basement'
+LOG=$(run "$overflow; screen room_source; turn 11; wait 150; labels; state room_temp=71; press")
+expect "$LOG" 'text=Basement$' 'last catalog source cannot be focused'
+expect "$LOG" '^CMD: room_source_id=120$' 'last catalog source cannot be applied'
+LOG=$(run "$overflow; screen room_source; turn 7; turn -1; press")
+expect "$LOG" '^CMD: room_source_id=70$' 'turning back across rings lost the source'
+LOG=$(run "$overflow; screen room_source; turn 7; wait 150; tap $((54 * disp / 480)) $((disp / 2)); info")
+expect_not "$LOG" '^CMD: room_source_id=' 'Back on the second ring sent a source ID'
+expect "$LOG" 'screen=settings.*set_sel=heatpump' 'Back on the second ring did not return to settings'
+LOG=$(run "$overflow; screen room_source; turn 12; labels; press; info")
+expect "$LOG" 'text=Back$' 'Back cannot be reached after a full catalog'
+expect_not "$LOG" '^CMD: room_source_id=' 'Back after a full catalog sent a source ID'
 
 if ((fail)); then exit 1; fi
 echo 'PASS room-source'

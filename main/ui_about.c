@@ -29,6 +29,14 @@ static touch_floor_arg_t s_ab_back_tf = { TF_CAP_PILL_ROW, "AB.back" };
 static struct { lv_obj_t *icon, *ver, *big, *cap, *btn, *btnlbl,
                          *btn2, *btn2lbl, *hint, *arc; } UP;
 
+/* Knob focus on the Update screen: 0 = primary pill, 1 = Cancel. Only the
+ * confirm state shows both, so focus only moves there; it resets to the
+ * primary pill whenever the OTA state changes. */
+static int        s_up_sel;
+static ota_ui_t   s_up_sel_st = OTA_UI_HIDDEN;
+
+static bool update_two_pills(void) { return s_ota_st == OTA_UI_CONFIRM; }
+
 static void ota_btn2_click_cb(lv_event_t *e)
 {
     (void)e;
@@ -70,10 +78,14 @@ void build_update(void)
 
     UP.btn = mkchip_btn(row, "Install", COL_ON_LIGHT, SET_COL[SET_ABOUT],
                         ota_btn_click_cb, &s_up_btn_tf);
+    lv_obj_set_style_outline_color(UP.btn, lv_color_white(), 0);
+    lv_obj_set_style_outline_pad(UP.btn, SERIN_PX(3), 0);
     UP.btnlbl = lv_obj_get_child(UP.btn, 0);
 
     UP.btn2 = mkchip_btn(row, "Cancel", COL_WHITE, 0,
                          ota_btn2_click_cb, &s_up_btn2_tf);
+    lv_obj_set_style_outline_color(UP.btn2, lv_color_white(), 0);
+    lv_obj_set_style_outline_pad(UP.btn2, SERIN_PX(3), 0);
     UP.btn2lbl = lv_obj_get_child(UP.btn2, 0);
 
     UP.hint = mklabel(c, FONT_HINT, COL_GREY, "");
@@ -92,6 +104,8 @@ void refresh_update(void)
     uint32_t icol = 0;
     int ipx = 0;
 
+    if (s_ota_st != s_up_sel_st) { s_up_sel = 0; s_up_sel_st = s_ota_st; }
+
     switch (s_ota_st) {
         case OTA_UI_CHECKING:
             snprintf(ver, sizeof ver, "v%s", cur);
@@ -105,7 +119,8 @@ void refresh_update(void)
             snprintf(big, sizeof big, "v%s", s_ota_txt);
             bigcol = COL_GREEN;
             cap = "Update available";
-            b1 = "Install"; b2 = "Cancel"; h = H_PRESS("install");
+            b1 = "Install"; b2 = "Cancel";
+            h = s_up_sel ? H_PRESS("cancel") : H_PRESS("install");
             break;
         case OTA_UI_DOWNLOAD:
             snprintf(ver, sizeof ver, "v%s \xE2\x86\x92 v%s", cur, s_ota_txt);
@@ -161,6 +176,9 @@ void refresh_update(void)
     else    lv_obj_add_flag(UP.btn, LV_OBJ_FLAG_HIDDEN);
     if (b2) { lv_obj_remove_flag(UP.btn2, LV_OBJ_FLAG_HIDDEN); lv_label_set_text(UP.btn2lbl, b2); }
     else    lv_obj_add_flag(UP.btn2, LV_OBJ_FLAG_HIDDEN);
+    bool two = update_two_pills();
+    lv_obj_set_style_outline_width(UP.btn,  (two && s_up_sel == 0) ? SERIN_PX(3) : 0, 0);
+    lv_obj_set_style_outline_width(UP.btn2, (two && s_up_sel == 1) ? SERIN_PX(3) : 0, 0);
     if (h) { lv_obj_remove_flag(UP.hint, LV_OBJ_FLAG_HIDDEN); lv_label_set_text(UP.hint, h); }
     else   lv_obj_add_flag(UP.hint, LV_OBJ_FLAG_HIDDEN);
     if (arc) { lv_obj_remove_flag(UP.arc, LV_OBJ_FLAG_HIDDEN); lv_arc_set_value(UP.arc, s_ota_pct); }
@@ -322,9 +340,8 @@ void build_about(void)
     lv_obj_set_scroll_snap_y(AB.cont, LV_SCROLL_SNAP_START);
     lv_obj_set_scrollbar_mode(AB.cont, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_event_cb(AB.cont, about_scroll_cb, LV_EVENT_SCROLL, NULL);
-    lv_obj_add_event_cb(AB.cont, about_bg_cb, LV_EVENT_CLICKED, NULL);
 
-    about_hdr(AB.cont, "DIAL");
+    about_hdr(AB.cont, "LINK");
     about_row(AB.cont, "Firmware",  AB_D_FW);
     about_row(AB.cont, "Build",     AB_D_BUILD);
     about_row(AB.cont, "Board",     AB_D_BOARD);
@@ -334,7 +351,7 @@ void build_about(void)
     about_row(AB.cont, "Protocol",  AB_D_PROTO);
 
     uint16_t feat = s_caps.features;
-    about_hdr(AB.cont, "UNIT");
+    about_hdr(AB.cont, "CONTROLLER");
     if (feat & SL2_FEAT_FW_INFO) {
         about_row(AB.cont, "Firmware",  AB_U_FW);
         about_row(AB.cont, "Build",     AB_U_BUILD);
@@ -351,7 +368,7 @@ void build_about(void)
         about_row(AB.cont, "Channel",   AB_U_CH);
     }
 
-    about_hdr(AB.cont, "LINK");
+    about_hdr(AB.cont, "CONNECTION");
     about_row(AB.cont, "Status",    AB_L_STATE);
     about_row(AB.cont, "Signal",    AB_L_RSSI);
     about_row(AB.cont, "Last seen", AB_L_SEEN);
@@ -625,6 +642,19 @@ void about_caps_changed(void)
 {
     if (s_cur != SCREEN_ABOUT || !s_panel[SCREEN_ABOUT]) return;
     screen_rebuild(SCREEN_ABOUT);
+}
+
+void update_turn(int delta)
+{
+    if (!update_two_pills() || delta == 0) return;
+    s_up_sel = delta > 0 ? 1 : 0;
+    refresh_update();
+}
+
+void update_press(void)
+{
+    if (update_two_pills() && s_up_sel == 1) { notify_ota_cancel(); return; }
+    ota_action();
 }
 
 void ota_action(void)

@@ -309,24 +309,24 @@ void info_dialog_show(uint32_t accent, const serin_icon_t *icon,
 void settings_chip_dialog(int idx)
 {
     static const char NOLINK_BODY[] =
-        "This status comes from the Serin controller, which the dial "
-        "can't reach right now. Restore the link to update it.";
+        "This status comes from the Serin Controller. Link can't "
+        "reach it right now, so the status can't update.";
     switch (idx) {
         case SET_WIFI:
             if (!s_link.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
-                                  "Go to Link", DLG_GOTO_LINK_ROW);
+                alert_dialog_show(COL_ALERT_NOLINK, "Controller offline", NOLINK_BODY,
+                                  "Go to Controller", DLG_GOTO_LINK_ROW);
             else if (!s_state.wifi_connected)
                 alert_dialog_show(COL_GREY, "Wi-Fi offline",
-                    "The Serin controller is not connected to a Wi-Fi "
+                    "The Serin Controller is not connected to a Wi-Fi "
                     "network. Smart home control and firmware updates are "
                     "unavailable until it reconnects.",
                     NULL, DLG_GOTO_LINK_ROW);
             break;
         case SET_HOMEKIT:
             if (!s_link.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
-                                  "Go to Link", DLG_GOTO_LINK_ROW);
+                alert_dialog_show(COL_ALERT_NOLINK, "Controller offline", NOLINK_BODY,
+                                  "Go to Controller", DLG_GOTO_LINK_ROW);
             else if (s_state.hk_paired <= 0)
                 alert_dialog_show(COL_GREY, "Ready to pair",
                     hk_protocol() == HK_PROTO_MATTER
@@ -342,8 +342,8 @@ void settings_chip_dialog(int idx)
         case SET_LINK:
             if (s_link.online) break;
             if (!s_link.bonded)
-                alert_dialog_show(COL_ALERT_NOLINK, "Link offline",
-                    "The dial is not paired with a Serin controller, so "
+                alert_dialog_show(COL_ALERT_NOLINK, "Not paired",
+                    "Link is not paired with a Serin Controller, so "
                     "there is nothing to control yet.",
                     "Pair", DLG_PAIR);
             else
@@ -354,8 +354,8 @@ void settings_chip_dialog(int idx)
          * has its own row under Advanced. */
         case SET_SYSTEM:
             if (!s_link.online)
-                alert_dialog_show(COL_ALERT_NOLINK, "No link", NOLINK_BODY,
-                                  "Go to Link", DLG_GOTO_LINK_ROW);
+                alert_dialog_show(COL_ALERT_NOLINK, "Controller offline", NOLINK_BODY,
+                                  "Go to Controller", DLG_GOTO_LINK_ROW);
             else if (!(s_caps.features & SL2_FEAT_LINK_SENSOR))
                 alert_dialog_show(COL_GREY, "Room Sensor",
                     "The heat pump's own sensor measures the room. This "
@@ -385,10 +385,10 @@ void settings_chip_dialog(int idx)
 static void off_chain_rail(lv_obj_t *col)
 {
     const bool  ok[3]   = { true, s_link.online, s_state.cn105_connected };
-    const char *name[3] = { "This dial", "Controller", "Heat pump" };
+    const char *name[3] = { "Link", "Controller", "Heat pump" };
     const char *stat[3] = { "OK",
-                            s_link.online           ? "Linked" : "No reply",
-                            s_state.cn105_connected ? "Linked" : "No reply" };
+                            s_link.online           ? "Connected" : "No reply",
+                            s_state.cn105_connected ? "Connected" : "No reply" };
 
     lv_obj_t *rail = lv_obj_create(col);
     lv_obj_remove_style_all(rail);
@@ -476,7 +476,7 @@ static void offline_dialog_build(bool link_off, const char *primary, dlg_action_
 
     mkicon(col, &hero_alert, SERIN_PX(36), accent);
     mklabel(col, link_off ? FONT_SET_NAME : FONT_DIAL_PILL, accent,
-            link_off ? "Link offline" : "Heat pump offline");
+            link_off ? "Controller offline" : "Heat pump offline");
 
     if (!link_off) off_chain_rail(col);
 
@@ -548,13 +548,13 @@ void fault_dialog_show(const char *primary)
         char code[8];
         fault_code_str(code, sizeof code, s_state.error_code);
         snprintf(body, sizeof body,
-                 "The heat pump has stopped and reported fault code %s. The dial "
+                 "The heat pump has stopped and reported fault code %s. Link "
                  "can't clear it, so write the code down for whoever services it. "
                  "This clears on its own if the heat pump recovers.", code);
     } else {
         snprintf(body, sizeof body,
                  "The heat pump has stopped and reported a fault, but not which one. "
-                 "The dial can't clear it. This clears on its own if the heat pump "
+                 "Link can't clear it. This clears on its own if the heat pump "
                  "recovers.");
     }
     alert_dialog_show(COL_ALERT_WARN, "Heat pump fault", body, primary, DLG_GOTO_HEATPUMP);
@@ -568,7 +568,7 @@ void reset_dialog_show(void)
     dlg_alert_ring(COL_ALERT_NOLINK, false);
 
     mkicon(col, &hero_alert, SERIN_PX(36), COL_ALERT_NOLINK);
-    mklabel(col, FONT_SET_NAME, COL_ALERT_NOLINK, "Reset link?");
+    mklabel(col, FONT_SET_NAME, COL_ALERT_NOLINK, "Reset Link?");
     mkbody(col, FONT_STATUS_SM, COL_DIM,
         "Erases all pairings, Wi-Fi setup choices, and preferences. "
         "Your heat pump keeps running.", SERIN_PX(DLG_BODY_W));
@@ -581,6 +581,9 @@ void reset_dialog_show(void)
     dlg_pill(row, "Reset", COL_ALERT_NOLINK, &k_reset_tf[0], 0);
     lv_obj_t *drow = mkpillrow(col, TF_GAP_DLG_ROW, 0);
     dlg_pill(drow, "Cancel", COL_WHITE, &k_reset_tf[1], 1);
+    /* The user arrives here straight off a 1.5 s knob hold, so a reflex press
+     * must land on the safe choice. Turning reaches Reset. */
+    s_dlg_sel = 1;
     dlg_apply_sel();
 }
 

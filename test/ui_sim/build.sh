@@ -20,7 +20,17 @@ path=Path(sys.argv[1]); text=path.read_text()
 marker='    if (!strcmp(cmd, "roomsrc")) {'
 if marker not in text:
     raise SystemExit('Unsupported simulator: roomsrc command insertion point missing')
-path.write_text(text.replace(marker, Path(sys.argv[2]).read_text()+'\n'+marker, 1))
+support=Path(sys.argv[2]).parent
+text=text.replace(marker, (support/'wifi_command.inc').read_text()+'\n'+Path(sys.argv[2]).read_text()+'\n'+marker, 1)
+text=text.replace('static int s_wifi_setup_reqs = 0;', (support/'wifi_callbacks.inc').read_text()+'\nstatic int s_wifi_setup_reqs = 0;', 1)
+path.write_text(text)
+main=path.parent/'sim_main.c'
+text=main.read_text()
+text=text.replace('    ui_set_on_wifi_setup(sim_cmd_on_wifi_setup);', '''    ui_set_on_wifi_setup(sim_cmd_on_wifi_setup);
+    extern void sim_wifi_session_start(uint32_t), sim_wifi_cancel(uint32_t);
+    ui_set_on_wifi_setup_session(sim_wifi_session_start);
+    ui_set_on_wifi_cancel(sim_wifi_cancel);''')
+main.write_text(text)
 PY
 make -C "$build/source" -j"${SERIN_SIM_JOBS:-8}" ROOT="$root" BOARD="$board" BUILD="$build/$board" >&2
 printf '%s\n' "$build/$board/serin-sim"

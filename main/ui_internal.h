@@ -59,6 +59,8 @@ void ui_hold_abort(void);
 void screen_rebuild(screen_id_t id);
 
 void notify_wifi_setup(void);
+void notify_wifi_setup_session(uint32_t session);
+void notify_wifi_cancel(uint32_t session);
 
 #define OPA_FILL_NEUTRAL  26
 
@@ -85,6 +87,8 @@ void build_update(void);
 void refresh_update(void);
 void ota_action(void);
 void update_hold(void);
+void update_turn(int delta);
+void update_press(void);
 
 void fault_code_str(char *out, size_t n, uint16_t code);
 

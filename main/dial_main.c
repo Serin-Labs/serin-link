@@ -55,6 +55,8 @@ void app_main(void)
         ui_set_on_zone_select(espnow_client_set_active);
         ui_set_on_zones_open(espnow_client_refresh_idents);
         ui_set_on_wifi_setup(espnow_client_wifi_setup);
+        ui_set_on_wifi_setup_session(espnow_client_wifi_setup_session);
+        ui_set_on_wifi_cancel(espnow_client_wifi_cancel);
         ui_set_on_room_source_id(espnow_client_on_room_source_id);
         ui_set_fw_version(esp_app_get_description()->version);
         ui_set_fw_build(esp_app_get_description()->date);

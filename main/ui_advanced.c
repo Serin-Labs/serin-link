@@ -31,12 +31,12 @@ static const char *const ADV_INFO[ADV_N] = {
     NULL,
     "Ignores turns and taps so settings can't change by accident. "
     "Hold the knob to unlock.",
-    "What the panel shows when nobody is using the dial. Glance keeps a dim "
-    "temperature face; Off turns the screen fully dark and the dial runs "
+    "What the panel shows when nobody is using Link. Glance keeps a dim "
+    "temperature face; Off turns the screen fully dark and Link runs "
     "cooler, so room readings drift less.",
-    "The controller flags night hours. While night is active the dial caps "
+    "The controller flags night hours. While night is active Link caps "
     "its brightness near 20% so it doesn't glow in a dark room. Changing "
-    "Brightness lifts the cap until the dial goes idle.",
+    "Brightness lifts the cap until Link goes idle.",
     "Fades between screens. Off changes screens immediately.",
     NULL, NULL, NULL
 };
@@ -416,7 +416,7 @@ void refresh_advanced(void)
     if (s_adv_sel == ADV_RESET)
         hint = H_HOLD("reset");
     else if (s_adv_sel == ADV_LOCK && s_child_lock.enabled && !s_adv_editing)
-        hint = H_HOLD("unlock") " on the dial";
+        hint = H_HOLD("unlock") " on the home screen";
     else if (s_adv_sel == ADV_HEATPUMP)
         hint = zones_can_enter() ? H_PRESS("choose") : "";
     else if (s_adv_editing)

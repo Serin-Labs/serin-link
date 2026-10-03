@@ -30,7 +30,7 @@ static const char *TAG = "sensor_sht40";
 #define FAIL_BACKOFF_MS   (SAMPLE_MS * 2)
 #define AIRFLOW_TAU_IN_MS   600000
 #define AIRFLOW_TAU_OUT_MS 1500000
-#define TEMP_FILTER_TAU_MS  300000
+#define TEMP_FILTER_TAU_MS   60000
 #define MAX_FAILS         3
 #define PROBE_TRIES       3
 #define PROBE_RETRY_MS    100

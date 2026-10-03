@@ -95,6 +95,8 @@ static void test_mac_eq(void) {
 }
 
 int main(void) {
+    assert(sizeof(struct sl2_room_source_set_pkt) == 18);
+    assert(sizeof(struct sl2_dial_sensor_pkt) == 11);
     test_ftab1_round_trips_every_f();
     test_ftab1_known_points();
     test_ftab1_clamps_out_of_range();

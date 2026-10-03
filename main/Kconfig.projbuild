@@ -89,6 +89,12 @@ config SERIN_SHT40_RH_GAIN_PPT
         differ in stability by about 4x, which is how you can tell the
         multiplicative model is the right one.
 
+        It is only right for one dT, so re-fit it whenever
+        SERIN_SHT40_OFFSET_CC changes:
+        gain = exp(4283.78 * dT / ((243.12 + T) * (243.12 + T + dT))),
+        with T the ambient temperature in C (Sensirion's Magnus constants).
+        At T = 22: dT 0.90 -> 1056, 1.53 -> 1097, 2.72 -> 1178.
+
 config SERIN_SHT40_OFFSET_CC
     int "SHT41 self-heating offset (centi-degrees C)"
     depends on SERIN_SHT40

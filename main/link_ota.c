@@ -328,7 +328,7 @@ static void ota_task(void *arg)
     espnow_wifi_req_t creds = espnow_client_request_wifi(ssid, sizeof(ssid), psk, sizeof(psk),
                                                          CREDS_TIMEOUT_MS);
     if (creds != ESPNOW_WIFI_REQ_OK) {
-        fail = creds == ESPNOW_WIFI_REQ_NO_CREDS ? "Unit has no WiFi" : "Unit unreachable";
+        fail = creds == ESPNOW_WIFI_REQ_NO_CREDS ? "Controller has no Wi-Fi" : "Controller unreachable";
         goto done;
     }
     if (s_cancel) goto done;
@@ -336,7 +336,7 @@ static void ota_task(void *arg)
     espnow_client_ota_pause(true);
     espnow_paused = true;
     if (!wifi_sta_join(ssid, psk, &s_cancel)) {
-        if (!s_cancel) fail = "WiFi failed";
+        if (!s_cancel) fail = "Wi-Fi failed";
         goto done;
     }
     wifi_up = true;
@@ -425,7 +425,7 @@ void link_ota_begin(void)
     if (!espnow_client_worker_submit(ota_task, NULL)) {
         s_running = false;
         ESP_LOGE(TAG, "OTA submit refused (worker busy)");
-        ota_ui(OTA_UI_FAIL, 0, "Link busy — retry");
+        ota_ui(OTA_UI_FAIL, 0, "Link busy, try again");
     }
 }
 

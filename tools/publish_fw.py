@@ -23,8 +23,8 @@ before replacing only firmware/link/ota/<channel>/ in that local checkout.
 Each board's app lands beside manifest.json as <id>-app.bin, and the manifest
 carries its size and sha256. The dial resolves each path relative to the
 manifest URL under the public Serin-Labs/serin-cn105 repo. Stable and beta use
-separate link/ota/ directories. The older encrypted feeds at link/manifest.json
-and link/beta/manifest.json are preserved for installed legacy firmware.
+separate link/ota/ directories. Retired encrypted feeds are not valid release
+inputs; the complete candidate distribution must use the current manifest contract.
 
 The staged app bin is plaintext, and the dial verifies the download by that
 sha256 and by the RSA-3072 app signature it checks before it switches boot
@@ -342,7 +342,7 @@ def build(board: str, defaults: str, signing_key: pathlib.Path,
 def stage_distribution(distribution: pathlib.Path, stage: pathlib.Path, channel: str) -> None:
     """Validate a complete candidate tree, then replace only its plaintext channel.
 
-    Legacy encrypted feeds and factory images remain at firmware/link/.
+    The other OTA channel, factory images and other products remain unchanged.
     This edits a local checkout; it never commits or pushes anything.
     """
     distribution = distribution.expanduser().resolve()

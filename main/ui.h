@@ -176,6 +176,10 @@ void        ui_button_up(void);
 void        ui_set_on_forget(void (*cb)(void));
 
 void        ui_set_on_wifi_setup(void (*cb)(void));
+void        ui_set_on_wifi_setup_session(void (*cb)(uint32_t session));
+void        ui_set_on_wifi_cancel(void (*cb)(uint32_t session));
+/* Call under the LVGL lock; stale sessions and inactive wizards are ignored. */
+void        ui_wifi_cancel_result(uint32_t session, uint8_t status);
 const char *ui_wifi_face(void);
 
 #define UI_MAX_ZONES 7

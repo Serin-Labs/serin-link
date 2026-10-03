@@ -10,6 +10,9 @@
 #include <esp_netif.h>
 #include <esp_event.h>
 #include <esp_timer.h>
+#include <esp_random.h>
+#include "wifi_setup_session.h"
+#include "room_replay.h"
 #include <esp_mac.h>
 #include <esp_console.h>
 #include <linenoise/linenoise.h>
@@ -27,6 +30,7 @@
 #include "esp_log.h"
 #include "ui.h"
 #include "sl2_proto.h"
+#include "sl2_pair_auth.h"
 #include "sl2_ui_map.h"
 #include "sl2_info_apply.h"
 #include <esp_app_desc.h>
@@ -81,6 +85,7 @@ typedef struct {
     uint64_t roomSourceId;
     uint8_t  roomSourceStatus;
     uint8_t  roomRequestId;
+    wifi_setup_session_t wifiSession;
     uint8_t  gate;
     uint8_t  nightCeil;
     bool     night;
@@ -302,11 +307,26 @@ static volatile bool s_pair_busy = false;
 
 static uint8_t  s_pair_mac[6];
 static volatile bool s_pair_confirm = false;
-static volatile uint32_t s_pair_state_ms = 0;
+static volatile uint32_t s_pair_ack_ms = 0;
+static struct sl2_pair_auth_pkt s_pair_expected_ack;
+static portMUX_TYPE s_pair_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void pair_confirm_stop(void) {
+    portENTER_CRITICAL(&s_pair_mux);
+    s_pair_confirm = false;
+    memset(&s_pair_expected_ack, 0, sizeof s_pair_expected_ack);
+    portEXIT_CRITICAL(&s_pair_mux);
+}
 
 static volatile bool s_ota_hold = false;
 static void radio_ps_apply(void);
 static bool s_ps_applied_min;
+/* Keep the physical radio awake for asynchronous cancellation replies.
+ * WIFI_PS_NONE alone does not override ESP-NOW's connectionless RX window.
+ * Retries renew this bounded hold; timeout/exit always releases the reference. */
+#define WIFI_CANCEL_REPLY_MS 2000u
+static bool s_wifi_cancel_rx_hold;
+static uint32_t s_wifi_cancel_tx_ms;
 static int  cmd_radio_ps(int argc, char **argv);
 static volatile bool s_wifi_resp_have = false;
 static volatile bool s_wifi_req_pending = false;
@@ -481,6 +501,11 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     if (zi == s_active) sweep_backoff_reset();
     bool epoch_moved = z->epochSync && p->epoch && p->epoch != z->epochSync;
     if (epoch_moved) z->epochSync = p->epoch;
+    if (z->epoch != p->epoch) {
+        /* Fresh live readings must resume immediately after resync. */
+        z->sensTxMs = 0;
+        z->scrTxValid = false;
+    }
     z->epoch = p->epoch;
     bool use_f = (p->flags & SL2_SF_USE_F) != 0;
     if (z->caps_seq != p->caps_seq) z->want_caps = true;
@@ -651,11 +676,34 @@ static void handle_evt(evt_t *it) {
         return;
     }
     if (it->kind == EV_TX) {
-        if (it->data[0] == SL2_PKT_WIFI_SETUP &&
-            it->len == sizeof(struct sl2_wifi_setup_pkt)) {
+        if (it->data[0] == SL2_PKT_ROOM_SOURCE_SET &&
+            !room_source_tx_current(it->data, it->len,
+                                    s_z[it->zi].peerVer, s_z[it->zi].epoch)) {
+            /* UI displays only confirmed selection; no held edit to retry. */
+            return;
+        }
+        if ((it->data[0] == SL2_PKT_WIFI_SETUP && it->len == SL2_WIFI_SETUP_SESSION_MIN_LEN) ||
+            (it->data[0] == SL2_PKT_WIFI_CANCEL && it->len == SL2_WIFI_CANCEL_MIN_LEN)) {
+            uint32_t session, wire;
+            memcpy(&session, it->data + offsetof(struct sl2_wifi_cancel_pkt, session), sizeof session);
+            if (!wifi_setup_session_tx(&s_z[it->zi].wifiSession,
+                    it->data[0] == SL2_PKT_WIFI_CANCEL, session, esp_random(), &wire)) return;
+            memcpy(it->data + offsetof(struct sl2_wifi_cancel_pkt, session), &wire, sizeof wire);
+        }
+        if ((it->data[0] == SL2_PKT_WIFI_SETUP && it->len >= SL2_WIFI_SETUP_MIN_LEN) ||
+            (it->data[0] == SL2_PKT_WIFI_CANCEL && it->len >= SL2_WIFI_CANCEL_MIN_LEN)) {
             uint16_t ep = s_z[it->zi].epoch;
             memcpy(it->data + offsetof(struct sl2_wifi_setup_pkt, epoch),
                    &ep, sizeof ep);
+        }
+        if (it->data[0] == SL2_PKT_WIFI_CANCEL) {
+            s_wifi_cancel_tx_ms = now_ms();
+            if (!s_wifi_cancel_rx_hold) {
+                esp_err_t e = esp_wifi_force_wakeup_acquire();
+                s_wifi_cancel_rx_hold = e == ESP_OK;
+                if (e != ESP_OK)
+                    ESP_LOGW(TAG, "Wi-Fi cancel receive hold failed: %s", esp_err_to_name(e));
+            }
         }
         link_send(s_z[it->zi].bond.mac, it->data, it->len, "TX");
         return;
@@ -718,6 +766,18 @@ static void handle_evt(evt_t *it) {
         }
         break;
     }
+    case SL2_PKT_WIFI_CANCEL_ACK: {
+        struct sl2_wifi_cancel_ack_pkt a;
+        sl2_decode_pkt(&a, sizeof a, data, len);
+        uint32_t session;
+        if (it->zi == s_active &&
+            wifi_setup_session_ack(&s_z[it->zi].wifiSession, a.session, &session) &&
+            lvgl_port_lock(0)) {
+            ui_wifi_cancel_result(session, a.status);
+            lvgl_port_unlock();
+        }
+        break;
+    }
     case SL2_PKT_ROOM_SOURCE_ACK: {
         struct sl2_room_source_ack_pkt a;
         sl2_decode_pkt(&a, sizeof a, data, len);
@@ -777,8 +837,17 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
         }
         return;
     }
-    if (s_pair_confirm && memcmp(info->src_addr, s_pair_mac, 6) == 0 &&
-        data[0] == SL2_PKT_STATE) { s_pair_state_ms = ms_stamp(now_ms()); return; }
+    if (data[0] == SL2_PKT_PAIR_ACK) {
+        /* Compare a precomputed key-bound proof. STATE may already be queued
+         * or in flight under the previous LMK when a re-pair installs a key. */
+        uint32_t received_ms = ms_stamp(now_ms());
+        portENTER_CRITICAL(&s_pair_mux);
+        if (s_pair_confirm && memcmp(info->src_addr, s_pair_mac, 6) == 0 &&
+            sl2_pair_auth_matches(data, len, &s_pair_expected_ack))
+            s_pair_ack_ms = received_ms;
+        portEXIT_CRITICAL(&s_pair_mux);
+        return;
+    }
 
     int zi = zone_by_mac(info->src_addr);
     if (zi < 0) return;
@@ -798,6 +867,9 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     case SL2_PKT_INFO:  if (len < SL2_INFO_HDR_LEN)  return; break;
     case SL2_PKT_ROOM_CATALOG_RESP:
         if (len < SL2_ROOM_CATALOG_RESP_HDR_LEN) return;
+        break;
+    case SL2_PKT_WIFI_CANCEL_ACK:
+        if (len < SL2_WIFI_CANCEL_ACK_MIN_LEN) return;
         break;
     case SL2_PKT_ROOM_SOURCE_ACK:
         if (len < SL2_ROOM_SOURCE_ACK_MIN_LEN) return;
@@ -1073,6 +1145,7 @@ static bool maybe_send_dial_info(int zi, uint32_t now) {
 
 static bool maybe_send_dial_sensor(int zi, uint32_t now) {
     zone_t *z = &s_z[zi];
+    if (!z->synced || !room_epoch_ready(z->peerVer, z->epoch)) return false;
     const bool wantScr = (z->caps.features & SL2_FEAT_SCREEN) != 0;
     if (!(z->caps.features & SL2_FEAT_LINK_SENSOR) && !wantScr) return false;
     if (!wantScr && !sensor_sht40_present()) return false;
@@ -1096,6 +1169,7 @@ static bool maybe_send_dial_sensor(int zi, uint32_t now) {
         .temp_cc  = have ? cc : SL2_CC_NA,
         .hum_cc   = have ? rh_cc : SL2_HUM_CC_NA,
         .want_src = SL2_ROOMSRC_NOEDIT,
+        .epoch    = z->epoch,
     };
     if (!link_send(z->bond.mac, &p, sizeof p, "DIAL_SENSOR")) return false;
     z->sensTxMs = ms_stamp(now);
@@ -1129,6 +1203,13 @@ static void link_task(void *arg) {
     uint32_t lastRadioTry = 0;
     for (;;) {
         esp_task_wdt_reset();
+        if (s_wifi_cancel_rx_hold &&
+            (uint32_t)(now_ms() - s_wifi_cancel_tx_ms) >= WIFI_CANCEL_REPLY_MS) {
+            esp_err_t e = esp_wifi_force_wakeup_release();
+            s_wifi_cancel_rx_hold = false;
+            if (e != ESP_OK)
+                ESP_LOGW(TAG, "Wi-Fi cancel receive release failed: %s", esp_err_to_name(e));
+        }
         if (s_pairing || s_ota_hold) {
             if (!wasHeld) {
                 wasHeld = true;
@@ -1372,7 +1453,8 @@ void espnow_client_on_units_edit(bool use_f) {
 void espnow_client_on_room_source_id(uint64_t source_id) {
     if (s_zn <= 0) return;
     zone_t *z = &s_z[s_active];
-    if (!(z->caps.features & SL2_FEAT_ROOM_CATALOG) || !catalog_held(s_active))
+    if (!z->synced || !room_epoch_ready(z->peerVer, z->epoch) ||
+        !(z->caps.features & SL2_FEAT_ROOM_CATALOG) || !catalog_held(s_active))
         return;
     bool found = false;
     for (int i = 0; i < s_catalog_count; i++)
@@ -1384,6 +1466,7 @@ void espnow_client_on_room_source_id(uint64_t source_id) {
     p.request_id = ++z->roomRequestId;
     p.revision = s_catalog_revision;
     p.source_id = source_id;
+    p.epoch = z->epoch;
     evt_post(EV_TX, s_active, &p, sizeof p, "ROOM_SOURCE_SET");
 }
 
@@ -1427,6 +1510,22 @@ void espnow_client_wifi_setup(void)
     memset(&p, 0, sizeof(p));
     p.type = SL2_PKT_WIFI_SETUP; p.version = SL2_PROTO_VERSION;
     evt_post(EV_TX, s_active, &p, sizeof p, "WIFI_SETUP");
+}
+
+void espnow_client_wifi_setup_session(uint32_t session)
+{
+    struct sl2_wifi_setup_session_pkt p = {
+        .type = SL2_PKT_WIFI_SETUP, .version = SL2_PROTO_VERSION, .session = session
+    };
+    evt_post(EV_TX, s_active, &p, sizeof p, "WIFI_SETUP_SESSION");
+}
+
+void espnow_client_wifi_cancel(uint32_t session)
+{
+    struct sl2_wifi_cancel_pkt p = {
+        .type = SL2_PKT_WIFI_CANCEL, .version = SL2_PROTO_VERSION, .session = session
+    };
+    evt_post(EV_TX, s_active, &p, sizeof p, "WIFI_CANCEL");
 }
 
 espnow_wifi_req_t espnow_client_request_wifi(char *ssid, size_t ssid_len,
@@ -1934,6 +2033,7 @@ static void pair_run(void) {
                     uint8_t rtr[SL2_RESP_TRANSCRIPT_LEN];
                     sl2_pair_resp_transcript(&resp, s_pair_pub, rtr);
                     if (resp.type != SL2_PKT_PAIR_RESP ||
+                        resp.version < SL2_PAIR_AUTH_MIN_VER ||
                         link_crypto_verify(resp.id_pub, rtr, sizeof rtr,
                                            resp.sig) != 0) {
                         ESP_LOGW(TAG, "pair: RESP signature invalid — ignoring");
@@ -1980,14 +2080,18 @@ have_valid_resp:
     memcpy(installed_mac, unit_mac, 6);
     peer_installed = true;
     { uint8_t cch; wifi_second_chan_t c2; esp_wifi_get_channel(&cch, &c2);
-      ESP_LOGW(TAG, "pair: lmk+peer ok, PROBE -> %02X:%02X:%02X:%02X:%02X:%02X on ch=%d",
+      ESP_LOGW(TAG, "pair: lmk+peer ok, PAIR_CONFIRM -> %02X:%02X:%02X:%02X:%02X:%02X on ch=%d",
                unit_mac[0],unit_mac[1],unit_mac[2],unit_mac[3],unit_mac[4],unit_mac[5], cch); }
 
+    struct sl2_pair_auth_pkt pr, ack;
+    sl2_pair_auth_make(&pr, SL2_PKT_PAIR_CONFIRM, lmk, my_mac, unit_mac);
+    sl2_pair_auth_make(&ack, SL2_PKT_PAIR_ACK, lmk, my_mac, unit_mac);
+    portENTER_CRITICAL(&s_pair_mux);
     memcpy(s_pair_mac, unit_mac, 6);
-    s_pair_state_ms = 0;
+    s_pair_expected_ack = ack;
+    s_pair_ack_ms = 0;
     s_pair_confirm = true;
-
-    struct sl2_probe_pkt pr = { SL2_PKT_PROBE, SL2_PROTO_VERSION, 0, {0} };
+    portEXIT_CRITICAL(&s_pair_mux);
     {
         uint8_t caught = 0; wifi_second_chan_t cc; esp_wifi_get_channel(&caught, &cc);
         if (resp.channel >= 1 && resp.channel <= 13 && resp.channel != caught) {
@@ -1999,32 +2103,32 @@ have_valid_resp:
         }
     }
     int acked = 0, sent = 0;
-    for (int i = 0; i < 20 && s_pair_state_ms == 0 && !s_pair_cancel; i++) {
+    for (int i = 0; i < 20 && s_pair_ack_ms == 0 && !s_pair_cancel; i++) {
         sent++;
-        if (link_send(unit_mac, &pr, sizeof pr, "PROBE")) acked++;
+        if (link_send(unit_mac, &pr, sizeof pr, "PAIR_CONFIRM")) acked++;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (acked == 0 && s_pair_state_ms == 0 && !s_pair_cancel) {
+    if (acked == 0 && s_pair_ack_ms == 0 && !s_pair_cancel) {
         ESP_LOGW(TAG, "pair: no ACKs — hunting the controller's channel");
         for (uint8_t ch = 1; ch <= 13 && !s_pair_cancel; ch++) {
             if (esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) != ESP_OK)
                 continue;
             for (int i = 0; i < 4 && !s_pair_cancel; i++) {
                 sent++;
-                if (link_send(unit_mac, &pr, sizeof pr, "PROBE")) { acked++; break; }
+                if (link_send(unit_mac, &pr, sizeof pr, "PAIR_CONFIRM")) { acked++; break; }
             }
             if (acked) { ESP_LOGW(TAG, "pair: controller ACKed on ch %u", ch); break; }
         }
     }
-    for (int i = 0; i < 100 && s_pair_state_ms == 0 && !s_pair_cancel; i++) {
+    for (int i = 0; i < 100 && s_pair_ack_ms == 0 && !s_pair_cancel; i++) {
         sent++;
-        if (link_send(unit_mac, &pr, sizeof pr, "PROBE")) acked++;
+        if (link_send(unit_mac, &pr, sizeof pr, "PAIR_CONFIRM")) acked++;
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    ESP_LOGW(TAG, "pair: confirm probes sent=%d acked=%d", sent, acked);
+    ESP_LOGW(TAG, "pair: key confirmations sent=%d acked=%d", sent, acked);
     if (s_pair_cancel) goto cancelled;
-    if (s_pair_state_ms != 0) {
-        s_pair_confirm = false;
+    if (s_pair_ack_ms != 0) {
+        pair_confirm_stop();
         uint8_t ch = 0; wifi_second_chan_t c2; esp_wifi_get_channel(&ch, &c2);
         espnow_bond_rec_t rec; memset(&rec, 0, sizeof rec);
         memcpy(rec.mac, unit_mac, 6);
@@ -2044,12 +2148,12 @@ have_valid_resp:
         vTaskDelay(pdMS_TO_TICKS(800));
         esp_restart();
     }
-    s_pair_confirm = false;
-    ESP_LOGW(TAG, "pair: no confirming STATE within ~6s");
+    pair_confirm_stop();
+    ESP_LOGW(TAG, "pair: no authenticated PAIR_ACK within ~6s");
     }
 fail:
     s_pairing = false;
-    s_pair_confirm = false;
+    pair_confirm_stop();
     ESP_LOGI(TAG, "pair: stack high-water %u free of %u",
              (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)PAIR_TASK_STACK);
     if (peer_installed) pair_peer_restore(installed_mac);
@@ -2063,7 +2167,7 @@ fail:
 cancelled:
     ESP_LOGW(TAG, "pair: cancelled by user");
     s_pairing = false;
-    s_pair_confirm = false;
+    pair_confirm_stop();
     if (peer_installed) pair_peer_restore(installed_mac);
     if (esp_now_is_peer_exist(PAIR_BCAST)) esp_now_del_peer(PAIR_BCAST);
     if (lvgl_port_lock(0)) { ui_set_pairing(PAIR_UI_PROMPT, 0); lvgl_port_unlock(); }
