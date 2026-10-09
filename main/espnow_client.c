@@ -65,6 +65,7 @@ typedef struct {
     uint16_t epochSync;
     volatile uint32_t lastRxMs;
     volatile uint32_t lastStateRxMs; /* Actual receipt; never advanced for hold grace. */
+    volatile uint8_t  lastStateCh;
     volatile uint32_t pendAckMs;
     volatile uint8_t  pendAckCh;
     volatile uint32_t lastAckMs;
@@ -886,12 +887,15 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     if (!espnow_events_post(&s_evq, &it)) { s_rx_drop++; return; }
     const uint32_t received = ms_stamp(now_ms());
     z->lastRxMs = received;
-    if (espnow_state_reply(data, len)) z->lastStateRxMs = received;
+    if (espnow_state_reply(data, len)) {
+        z->lastStateCh = s_radio_ch;
+        z->lastStateRxMs = received;
+    }
 }
 
 static bool probe_channel(const uint8_t mac[6], uint8_t ch) {
     if (!radio_set_channel(ch)) return false;
-    struct sl2_probe_pkt pr = { SL2_PKT_PROBE, SL2_PROTO_VERSION, 0, {0} };
+    struct sl2_probe_pkt pr = { SL2_PKT_PROBE, SL2_PROTO_VERSION, SL2_WANT_STATE, {0} };
     return link_send(mac, &pr, sizeof pr, "PROBE");
 }
 
@@ -926,6 +930,31 @@ static bool sweep_pass_due(uint32_t now) {
 
 typedef enum { SWEEP_MISS, SWEEP_LOCKED, SWEEP_ROUND_END } sweep_step_t;
 
+/* ACKs alone do not place the controller: the neighbouring channel returns
+ * them too, with no application traffic. Pull STATE and keep the receiver
+ * awake (power save would close it) until the reply is heard on this channel. */
+static bool sweep_channel_answers(zone_t *z, uint8_t ch) {
+    const bool held = esp_wifi_force_wakeup_acquire() == ESP_OK;
+    const uint32_t tuned = ms_stamp(now_ms());
+    bool acked = probe_channel(z->bond.mac, ch);
+    /* A reply received before retuning does not confirm this channel. */
+    if (acked && !zone_acked(s_active)) {
+        probe_channel(z->bond.mac, ch);
+        acked = zone_acked(s_active);
+    }
+    bool heard = false;
+    while (acked) {
+        heard = espnow_reply_since(tuned, z->lastStateRxMs, z->lastStateCh, ch);
+        if (heard || (uint32_t)(now_ms() - tuned) >= ESPNOW_CH_CONFIRM_MS) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (held) esp_wifi_force_wakeup_release();
+    if (acked && !heard)
+        ESP_LOGI(TAG, "zone %d ch %u ACKs but does not answer — not locking",
+                 s_active, ch);
+    return espnow_lock_ok(acked, heard);
+}
+
 static sweep_step_t sweep_probe_once(uint32_t now) {
     zone_t *z = &s_z[s_active];
     const uint8_t remembered = z->bond.last_channel;
@@ -941,12 +970,7 @@ static sweep_step_t sweep_probe_once(uint32_t now) {
         return SWEEP_ROUND_END;
     }
     s_sweep_step++;
-    if (!probe_channel(z->bond.mac, ch)) return SWEEP_MISS;
-    /* A reply received before retuning does not confirm this channel. */
-    if (!zone_acked(s_active)) {
-        probe_channel(z->bond.mac, ch);
-        if (!zone_acked(s_active)) return SWEEP_MISS;
-    }
+    if (!sweep_channel_answers(z, ch)) return SWEEP_MISS;
     s_channel = ch;
     s_sweeping = false;
     ESP_LOGI(TAG, "zone %d locked ch %u (%s, step %d)", s_active, ch,
@@ -1286,7 +1310,12 @@ static void link_task(void *arg) {
         }
         for (int i = 0; i < s_zn; i++) {
             uint8_t ach = s_z[i].lastAckCh;
-            if (zone_acked(i) && ach && s_z[i].bond.last_channel != ach) {
+            /* Background hop-polls do not hold the receiver awake for a
+             * reply, so only the active zone waits for one. */
+            bool replied = i != s_active ||
+                           espnow_reply_since(now - ESPNOW_RX_STALE_MS, s_z[i].lastStateRxMs,
+                                              s_z[i].lastStateCh, ach);
+            if (espnow_heal_due(zone_acked(i), ach, s_z[i].bond.last_channel, replied)) {
                 ESP_LOGI(TAG, "zone %d channel heal %u -> %u", i,
                          s_z[i].bond.last_channel, ach);
                 s_z[i].bond.last_channel = ach;
@@ -1387,7 +1416,7 @@ static void link_task(void *arg) {
         if (tx_due) cmd_tx(s_active, &txc);
         bool stuck_sync = (!s_z[s_active].synced && (now - s_sync_start_ms) > SYNC_WAIT_MS);
         bool rx_stale   = zone_rx_stale(s_active);
-        if ((!espnow_client_online() || stuck_sync || rx_stale) && !s_sweeping) {
+        if (espnow_hunt_due(espnow_client_online(), stuck_sync, rx_stale) && !s_sweeping) {
             bool lost = s_z[s_active].synced || stuck_sync;
             ESP_LOGW(TAG, "zone %d %s (ack %lu ms ago) — sweeping", s_active,
                      rx_stale     ? "rx stale (radio ACKs, app silent)"
@@ -1400,7 +1429,7 @@ static void link_task(void *arg) {
                                      ui_set_link_state(true, false, s_z[s_active].bond.mac, s_z[s_active].rssi);
                                      push_zones_ui_locked();
                                      lvgl_port_unlock(); }
-            if (!espnow_client_online()) sweep_begin();
+            sweep_begin();
             s_sync_start_ms = now_ms();
             lastProbe = now_ms();
         }

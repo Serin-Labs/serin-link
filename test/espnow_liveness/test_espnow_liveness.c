@@ -245,6 +245,70 @@ static void test_only_complete_compatible_state_is_contact(void) {
     assert(!espnow_state_reply(frame, sizeof frame));
 }
 
+/* Observed: after the controller's AP roamed, the dial sat on ch 5
+ * with the controller on ch 6. `zones` showed ack <1 s, synced=0 and no STATE
+ * for 5 h: the neighbouring channel returns radio ACKs but no application
+ * traffic, and nothing made the dial look elsewhere. */
+static void test_acked_but_silent_zone_still_hunts(void) {
+    assert(espnow_hunt_due(true, true, false));
+    assert(espnow_hunt_due(true, false, true));
+}
+
+static void test_lost_zone_hunts(void) {
+    assert(espnow_hunt_due(false, false, false));
+}
+
+static void test_healthy_zone_does_not_hunt(void) {
+    assert(!espnow_hunt_due(true, false, false));
+}
+
+static void test_ack_alone_does_not_lock_a_channel(void) {
+    assert(!espnow_lock_ok(true, false));
+    assert(espnow_lock_ok(true, true));
+    assert(!espnow_lock_ok(false, false));
+}
+
+static void test_reply_must_be_heard_on_the_probed_channel(void) {
+    const uint32_t asked = 500000;
+    assert(espnow_reply_since(asked, asked + 40, 6, 6));
+    assert(espnow_reply_since(asked, asked, 6, 6));
+    assert(!espnow_reply_since(asked, asked + 40, 6, 5));
+    assert(!espnow_reply_since(asked, asked + 40, 0, 0));
+}
+
+static void test_reply_older_than_the_question_is_not_an_answer(void) {
+    const uint32_t asked = 500000;
+    assert(!espnow_reply_since(asked, asked - 1, 6, 6));
+    assert(!espnow_reply_since(asked, asked - 20000, 6, 6));
+    assert(!espnow_reply_since(asked, 0, 6, 6));
+}
+
+static void test_reply_since_u32_wraparound(void) {
+    const uint32_t asked = UINT32_MAX - 100;
+    assert(espnow_reply_since(asked, 50, 6, 6));
+    assert(!espnow_reply_since(50, asked, 6, 6));
+}
+
+static void test_confirm_wait_covers_the_controller_state_floor(void) {
+    /* serin-link-core serves a STATE pull no sooner than 250 ms after its last
+     * STATE (SL2_STATE_MIN_INTERVAL_MS), from a loop that runs at about 20 Hz. */
+    assert(ESPNOW_CH_CONFIRM_MS >= 250 + 50);
+    assert(ESPNOW_CH_CONFIRM_MS <= 1000);
+}
+
+static void test_unconfirmed_ack_channel_is_not_remembered(void) {
+    /* "Channel heal" stored the neighbour's channel, so even a
+     * reboot started from it. */
+    assert(!espnow_heal_due(true, 5, 6, false));
+    assert(espnow_heal_due(true, 6, 5, true));
+}
+
+static void test_heal_needs_a_fresh_ack_and_a_change(void) {
+    assert(!espnow_heal_due(true, 6, 6, true));
+    assert(!espnow_heal_due(false, 6, 5, true));
+    assert(!espnow_heal_due(true, 0, 5, true));
+}
+
 int main(void) {
     test_only_complete_compatible_state_is_contact();
     test_fresh_controller_reply_survives_missed_radio_acks();
@@ -284,6 +348,16 @@ int main(void) {
     test_switch_cold_when_unsynced();
     test_switch_cold_when_ack_stale();
     test_switch_cold_when_rx_stale();
+    test_acked_but_silent_zone_still_hunts();
+    test_lost_zone_hunts();
+    test_healthy_zone_does_not_hunt();
+    test_ack_alone_does_not_lock_a_channel();
+    test_reply_must_be_heard_on_the_probed_channel();
+    test_reply_older_than_the_question_is_not_an_answer();
+    test_reply_since_u32_wraparound();
+    test_confirm_wait_covers_the_controller_state_floor();
+    test_unconfirmed_ack_channel_is_not_remembered();
+    test_heal_needs_a_fresh_ack_and_a_change();
     printf("espnow_liveness: all tests passed\n");
     return 0;
 }

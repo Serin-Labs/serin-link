@@ -66,3 +66,29 @@ static inline bool espnow_zone_checking(uint32_t now_ms, uint32_t first_probe_ms
 static inline bool espnow_switch_warm(bool synced, bool ack_fresh, bool rx_stale) {
     return synced && ack_fresh && !rx_stale;
 }
+
+/* A radio ACK also comes back from a neighbouring channel, where no application
+ * frame gets through. Only a STATE reply heard on a channel proves the peer is
+ * tuned to it. The wait covers the controller's 250 ms STATE floor plus one
+ * pass of its loop. */
+#define ESPNOW_CH_CONFIRM_MS 400
+
+static inline bool espnow_reply_since(uint32_t since_ms, uint32_t last_state_rx_ms,
+                                      uint8_t state_ch, uint8_t ch) {
+    return ch != 0 && state_ch == ch && last_state_rx_ms != 0 &&
+           (uint32_t)(last_state_rx_ms - since_ms) < 0x80000000u;
+}
+
+static inline bool espnow_lock_ok(bool acked, bool reply_on_channel) {
+    return acked && reply_on_channel;
+}
+
+/* Fresh ACKs with a silent application are not contact: keep hunting. */
+static inline bool espnow_hunt_due(bool link_fresh, bool stuck_sync, bool rx_stale) {
+    return !link_fresh || stuck_sync || rx_stale;
+}
+
+static inline bool espnow_heal_due(bool acked, uint8_t ack_ch, uint8_t remembered,
+                                   bool reply_on_ack_ch) {
+    return acked && ack_ch != 0 && remembered != ack_ch && reply_on_ack_ch;
+}
