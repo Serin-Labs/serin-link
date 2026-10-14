@@ -9,6 +9,7 @@
 #include "prefs.h"
 #include "espnow_client.h"
 #include "sl2_proto.h"
+#include "ui_gesture.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -27,10 +28,14 @@ static inline float set_ang(int id) { return rim_stop_angle(set_pos(id), s_set.n
 
 static void set_chip_click_cb(lv_event_t *e);
 static void settings_node_click_cb(lv_event_t *e);
+static void settings_add_zone_click_cb(lv_event_t *e);
+static void settings_nav_click_cb(lv_event_t *e);
 static void wifi_row_press_cb(lv_event_t *e);
 static void wifi_row_release_cb(lv_event_t *e);
 
 static int s_set_landing = -1;
+/* Classifies Wi-Fi row touches so any long press can eat its release tap. */
+static uig_t *s_wrow_gest;
 
 void settings_enter(void)
 {
@@ -96,13 +101,35 @@ static const serin_icon_t *const SET_ICON[SET_N] = {
 };
 
 static rim_t SETR;
-static struct { lv_obj_t *name, *brTrack, *brFill, *brPct,
-                         *status, *hint,
+static struct { lv_obj_t *name, *brHit, *brTrack, *brFill, *brPct,
+                         *navbtn, *status, *hint,
                          *wrow, *wdot, *wconn,
                          *hkcode, *hkrow, *hkpaired, *hkdot,
-                         *center, *lrow, *ldot, *lconn, *lmeta, *holdArc,
+                         *center, *lrow, *lconn, *lmeta, *lactions, *ladd, *holdArc,
                          *syrow, *sydot, *syconn, *roomSrc,
-                         *abatt, *abtn, *abtnlbl; } SS;
+                         *abatt, *abtn; } SS;
+
+/* Fixed centers in the 480 px design canvas. Hidden details never reflow the
+ * title or controls. The 230 px control width also clears the seven-stop ring. */
+enum { SET_TITLE_Y = SERIN_SLOT_TITLE_Y, SET_DETAIL_Y = SERIN_SLOT_DETAIL_Y,
+       SET_CONTROL_Y = SERIN_SLOT_CONTROL_Y, SET_HINT_TOP = SERIN_SLOT_HINT_TOP,
+       SET_CONTROL_W = SERIN_SLOT_CONTROL_W };
+
+static void settings_place(lv_obj_t *obj, int y)
+{
+    lv_obj_align(obj, LV_ALIGN_CENTER, 0, SERIN_PX(y) - SERIN_C);
+}
+
+static lv_obj_t *settings_detail(lv_obj_t *parent, const lv_font_t *font,
+                                  uint32_t color, const char *text)
+{
+    lv_obj_t *label = mklabel(parent, font, color, text);
+    lv_obj_set_size(label, SERIN_PX(260), lv_font_get_line_height(font));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    settings_place(label, SET_DETAIL_Y);
+    return label;
+}
 
 static void settings_chip(lv_obj_t *row)
 {
@@ -134,7 +161,7 @@ lv_obj_t *mkchip_btn(lv_obj_t *parent, const char *text, uint32_t txt_col,
 
 static void chip_status(lv_obj_t *dot, lv_obj_t *lbl, uint32_t col, const char *txt)
 {
-    lv_obj_set_style_bg_color(dot, lv_color_hex(col), 0);
+    if (dot) lv_obj_set_style_bg_color(dot, lv_color_hex(col), 0);
     lv_label_set_text(lbl, txt);
     lv_obj_set_style_text_color(lbl, lv_color_hex(col), 0);
 }
@@ -158,19 +185,62 @@ static void bright_track_cb(lv_event_t *e)
     lv_label_set_text_fmt(SS.brPct, "%d%%", pct);
 }
 
+static void settings_action_press_cb(lv_event_t *e)
+{
+    lv_obj_t *pill = lv_event_get_user_data(e);
+    lv_obj_set_state(pill, LV_STATE_PRESSED, lv_event_get_code(e) == LV_EVENT_PRESSED);
+}
+
+static lv_obj_t *settings_hit(lv_obj_t *parent, int width)
+{
+    lv_obj_t *hit = lv_obj_create(parent);
+    lv_obj_remove_style_all(hit);
+    /* The brightness track is below its value; reserve that visual space even
+     * on the 480 px panel, whose physical touch floor is smaller. */
+    int height = SERIN_PX(SERIN_SLOT_CONTROL_H);
+    if (height < SERIN_TOUCH_MIN) height = SERIN_TOUCH_MIN;
+    lv_obj_set_size(hit, SERIN_PX(width), height);
+    lv_obj_remove_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    return hit;
+}
+
+/* Reserve the full touch height without enlarging the visible pill or allowing
+ * invisible horizontal growth to cover a neighboring ring control. */
+static lv_obj_t *settings_action_slot(lv_obj_t *parent, int width, lv_obj_t **pill)
+{
+    lv_obj_t *hit = settings_hit(parent, width);
+
+    *pill = mkrow(hit, SERIN_PX(10));
+    settings_chip(*pill);
+    lv_obj_set_size(*pill, LV_SIZE_CONTENT,
+                    lv_font_get_line_height(FONT_DIAL_PILL) + 2 * SERIN_PX(11));
+    lv_obj_set_style_max_width(*pill, SERIN_PX(width), 0);
+    lv_obj_set_style_pad_hor(*pill, SERIN_PX(16), 0);
+    lv_obj_set_style_pad_ver(*pill, 0, 0);
+    lv_obj_remove_flag(*pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(*pill);
+    press_ack(*pill, ACK_OPA_CHIP);
+    lv_obj_add_event_cb(hit, settings_action_press_cb, LV_EVENT_PRESSED, *pill);
+    lv_obj_add_event_cb(hit, settings_action_press_cb, LV_EVENT_RELEASED, *pill);
+    lv_obj_add_event_cb(hit, settings_action_press_cb, LV_EVENT_PRESS_LOST, *pill);
+    return hit;
+}
+
 static lv_obj_t *settings_status_row(lv_obj_t *parent, int set_id, const char *placeholder,
-                                     const touch_floor_arg_t *tf,
                                      lv_obj_t **out_dot, lv_obj_t **out_label)
 {
-    lv_obj_t *r = mkrow(parent, SERIN_PX(15));
-    settings_chip(r);
-    lv_obj_set_user_data(r, (void *)(intptr_t)set_id);
-    lv_obj_add_event_cb(r, set_chip_click_cb, LV_EVENT_CLICKED, NULL);
-    press_ack(r, ACK_OPA_CHIP);
-    *out_dot   = mkdot(r, SERIN_PX(14), COL_GREEN);
-    *out_label = mklabel(r, FONT_DIAL_PILL, COL_GREEN, placeholder);
-    touch_floor(r, tf);
-    return r;
+    lv_obj_t *pill;
+    lv_obj_t *hit = settings_action_slot(parent, SET_CONTROL_W, &pill);
+    lv_obj_set_user_data(hit, (void *)(intptr_t)set_id);
+    lv_obj_add_event_cb(hit, set_chip_click_cb, LV_EVENT_CLICKED, NULL);
+    *out_dot = mkdot(pill, SERIN_PX(14), COL_GREEN);
+    *out_label = mklabel(pill, FONT_DIAL_PILL, COL_GREEN, placeholder);
+    lv_obj_set_style_max_width(*out_label, SERIN_PX(SET_CONTROL_W - 32 - 14 - 10), 0);
+    lv_obj_set_height(*out_label, lv_font_get_line_height(FONT_DIAL_PILL));
+    lv_label_set_long_mode(*out_label, LV_LABEL_LONG_SCROLL);
+    settings_place(hit, SET_CONTROL_Y);
+    return hit;
 }
 
 void build_settings(void)
@@ -195,21 +265,26 @@ void build_settings(void)
     };
     rim_build(&SETR, p, &cfg);
 
-    lv_obj_t *c = mkcol(p, SERIN_PX(340), 10, SERIN_PX(20));
-    lv_obj_align(c, LV_ALIGN_TOP_MID, 0, SERIN_PX(176));
+    lv_obj_t *c = SS.center = lv_obj_create(p);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, lv_pct(100), lv_pct(100));
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     SS.name = mklabel(c, FONT_SET_NAME, COL_ITEM_AMBER, "Brightness");
+    settings_place(SS.name, SET_TITLE_Y);
 
-    SS.brTrack = lv_obj_create(c);
+    SS.brHit = settings_hit(c, SET_CONTROL_W);
+    settings_place(SS.brHit, SET_CONTROL_Y);
+    lv_obj_add_event_cb(SS.brHit, bright_track_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(SS.brHit, bright_track_cb, LV_EVENT_PRESSING, NULL);
+    SS.brTrack = lv_obj_create(SS.brHit);
     lv_obj_remove_style_all(SS.brTrack);
     lv_obj_set_size(SS.brTrack, SERIN_PX(188), SERIN_PX(10));
     lv_obj_set_style_radius(SS.brTrack, SERIN_PX(5), 0);
     lv_obj_set_style_bg_opa(SS.brTrack, (lv_opa_t)36, 0);
     lv_obj_set_style_bg_color(SS.brTrack, lv_color_hex(COL_PURE), 0);
-    lv_obj_remove_flag(SS.brTrack, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(SS.brTrack, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(SS.brTrack, bright_track_cb, LV_EVENT_PRESSED,  NULL);
-    lv_obj_add_event_cb(SS.brTrack, bright_track_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_remove_flag(SS.brTrack, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(SS.brTrack, LV_ALIGN_CENTER, 0, SERIN_PX(32));
     SS.brFill = lv_obj_create(SS.brTrack);
     lv_obj_remove_style_all(SS.brFill);
     lv_obj_set_size(SS.brFill, SERIN_PX(188), SERIN_PX(10));
@@ -219,63 +294,86 @@ void build_settings(void)
     lv_obj_align(SS.brFill, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_remove_flag(SS.brFill, LV_OBJ_FLAG_CLICKABLE);
 
-    SS.brPct = mklabel(c, FONT_BRIGHT, COL_WHITE, "100%");
+    SS.brPct = mklabel(SS.brHit, FONT_BRIGHT, COL_WHITE, "100%");
+    lv_obj_align(SS.brPct, LV_ALIGN_CENTER, 0, -SERIN_PX(5));
 
-    SS.status = mklabel(c, FONT_STATUS, COL_SYSTEM, "Open");
+    lv_obj_t *nav_pill;
+    SS.navbtn = settings_action_slot(c, SET_CONTROL_W, &nav_pill);
+    SS.status = mklabel(nav_pill, FONT_DIAL_PILL, COL_WHITE, "Open");
+    lv_obj_add_event_cb(SS.navbtn, settings_nav_click_cb, LV_EVENT_CLICKED, NULL);
+    settings_place(SS.navbtn, SET_CONTROL_Y);
 
-    static const touch_floor_arg_t k_wrow_tf = { 0, "SS.wrow" };
-    SS.wrow = settings_status_row(c, SET_WIFI, "Connected", &k_wrow_tf, &SS.wdot, &SS.wconn);
+    SS.wrow = settings_status_row(c, SET_WIFI, "Connected", &SS.wdot, &SS.wconn);
     lv_obj_add_event_cb(SS.wrow, wifi_row_press_cb,   LV_EVENT_PRESSED,  NULL);
+    lv_obj_add_event_cb(SS.wrow, wifi_row_press_cb,   LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_add_event_cb(SS.wrow, wifi_row_release_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(SS.wrow, wifi_row_release_cb, LV_EVENT_PRESS_LOST, NULL);
+    static const uig_cfg_t k_wrow_gest = { 0 };
+    s_wrow_gest = uig_attach(SS.wrow, &k_wrow_gest);
 
-    SS.hkcode = mklabel(c, FONT_HK_CODE, COL_WHITE, "548-94-669");
+    SS.hkcode = settings_detail(c, FONT_DIAL_NOW, COL_WHITE, "548-94-669");
 
-    static const touch_floor_arg_t k_hkrow_tf = { 0, "SS.hkrow" };
-    SS.hkrow = settings_status_row(c, SET_HOMEKIT, "Paired", &k_hkrow_tf,
+    SS.hkrow = settings_status_row(c, SET_HOMEKIT, "Paired",
                                    &SS.hkdot, &SS.hkpaired);
 
-    SS.center = c;
-    static const touch_floor_arg_t k_lrow_tf = { 0, "SS.lrow" };
-    SS.lrow = settings_status_row(c, SET_LINK, "Connected", &k_lrow_tf, &SS.ldot, &SS.lconn);
+    SS.lmeta = settings_detail(c, FONT_STATUS, COL_DIM, "");
 
-    SS.lmeta = mklabel(c, FONT_STATUS, COL_DIM, "");
+    SS.lactions = mkrow(c, SERIN_PX(6));
+    lv_obj_remove_flag(SS.lactions, LV_OBJ_FLAG_SCROLLABLE);
+    settings_place(SS.lactions, SET_CONTROL_Y);
+    lv_obj_t *status_pill, *add_pill;
+    SS.lrow = settings_action_slot(SS.lactions, 112, &status_pill);
+    lv_obj_set_width(status_pill, lv_pct(100));
+    lv_obj_set_style_pad_hor(status_pill, SERIN_PX(4), 0);
+    lv_obj_set_user_data(SS.lrow, (void *)(intptr_t)SET_LINK);
+    lv_obj_add_event_cb(SS.lrow, set_chip_click_cb, LV_EVENT_CLICKED, NULL);
+    SS.lconn = mklabel(status_pill, FONT_STATUS, COL_GREEN, "Connected");
+    /* Hold feedback wraps without moving Add zone over a ring control. */
+    lv_obj_set_width(SS.lconn, 0);
+    lv_obj_set_flex_grow(SS.lconn, 1);
+    lv_label_set_long_mode(SS.lconn, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(SS.lconn, LV_TEXT_ALIGN_CENTER, 0);
+    SS.ladd = settings_action_slot(SS.lactions, 112, &add_pill);
+    lv_obj_set_width(add_pill, lv_pct(100));
+    lv_obj_set_style_pad_hor(add_pill, SERIN_PX(4), 0);
+    mklabel(add_pill, FONT_STATUS, COL_WHITE, "Add zone");
+    lv_obj_add_event_cb(SS.ladd, settings_add_zone_click_cb, LV_EVENT_CLICKED, NULL);
 
-    static const touch_floor_arg_t k_syrow_tf = { 0, "SS.syrow" };
-    SS.syrow = settings_status_row(c, SET_SYSTEM, "Connected", &k_syrow_tf,
+    SS.syrow = settings_status_row(c, SET_SYSTEM, "Connected",
                                    &SS.sydot, &SS.syconn);
 
-    SS.roomSrc = mklabel(c, FONT_STATUS, COL_DIM, "");
+    SS.roomSrc = settings_detail(c, FONT_STATUS, COL_DIM, "");
 
-    SS.abatt = mklabel(c, FONT_STATUS, COL_DIM, "");
+    SS.abatt = settings_detail(c, FONT_STATUS, COL_DIM, "");
 
-    static const touch_floor_arg_t k_abtn_tf = { 0, "SS.abtn" };
-    SS.abtn = mkchip_btn(c, "Details", COL_WHITE, 0, about_details_cb, &k_abtn_tf);
-    press_ack(SS.abtn, ACK_OPA_CHIP);
-    SS.abtnlbl = lv_obj_get_child(SS.abtn, 0);
+    lv_obj_t *about_pill;
+    SS.abtn = settings_action_slot(c, SET_CONTROL_W, &about_pill);
+    mklabel(about_pill, FONT_DIAL_PILL, COL_WHITE, "Details");
+    lv_obj_add_event_cb(SS.abtn, about_details_cb, LV_EVENT_CLICKED, NULL);
+    settings_place(SS.abtn, SET_CONTROL_Y);
 
     SS.hint   = mklabel(c, FONT_HINT, COL_GREY, "");
+    lv_obj_set_width(SS.hint, SERIN_PX(280));
     lv_obj_set_style_text_align(SS.hint, LV_TEXT_ALIGN_CENTER, 0);
-
-    static const touch_floor_arg_t k_brtrack_tf = { 0, "SS.brTrack" };
-    touch_floor(SS.brTrack, &k_brtrack_tf);
+    lv_obj_align(SS.hint, LV_ALIGN_TOP_MID, 0, SERIN_PX(SET_HINT_TOP));
 
     SS.holdArc = rim_arc(p, SET_LINK_ANG, SERIN_IND_HALF_DEG,
                          SERIN_PX(SERIN_RIM_W_SEL), COL_ALERT_NOLINK);
     lv_obj_add_flag(SS.holdArc, LV_OBJ_FLAG_HIDDEN);
 }
 
-enum { R_BRTRACK, R_BRPCT, R_STATUS, R_WROW, R_HKCODE, R_HKROW, R_LROW, R_LMETA,
-       R_SYROW, R_ROOMSRC, R_ABATT, R_ABTN, R_HINT, R_N };
+enum { R_BRIGHT, R_STATUS, R_WROW, R_HKCODE, R_HKROW, R_LACTIONS, R_LMETA,
+       R_SYROW, R_ROOMSRC, R_ABATT, R_ABTN, R_HINT, R_LADD, R_N };
+_Static_assert(R_N <= 16, "Settings visibility mask is too small");
 static uint16_t s_ss_want;
 static void ss_rows_begin(void) { s_ss_want = 1u << R_HINT; }
 static void ss_show(int r) { s_ss_want |=  (uint16_t)(1u << r); }
 static void ss_hide(int r) { s_ss_want &= (uint16_t)~(1u << r); }
 static void ss_rows_apply(void)
 {
-    lv_obj_t *const rows[R_N] = { SS.brTrack, SS.brPct, SS.status, SS.wrow, SS.hkcode,
-                                  SS.hkrow, SS.lrow, SS.lmeta, SS.syrow,
-                                  SS.roomSrc, SS.abatt, SS.abtn, SS.hint };
+    lv_obj_t *const rows[R_N] = { SS.brHit, SS.navbtn, SS.wrow, SS.hkcode,
+                                  SS.hkrow, SS.lactions, SS.lmeta, SS.syrow,
+                                  SS.roomSrc, SS.abatt, SS.abtn, SS.hint, SS.ladd };
     for (int i = 0; i < R_N; i++) {
         if (s_ss_want & (1u << i)) lv_obj_remove_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
         else                       lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
@@ -297,8 +395,7 @@ void refresh_settings(void)
     ss_rows_begin();
 
     if (idx == SET_BRIGHT) {
-        ss_show(R_BRTRACK);
-        ss_show(R_BRPCT);
+        ss_show(R_BRIGHT);
         lv_obj_set_width(SS.brFill, SERIN_PX(188) * s_brightness / 100);
         lv_label_set_text_fmt(SS.brPct, "%d%%", s_brightness);
         lv_label_set_text(SS.hint, H_PRESS("return"));
@@ -347,19 +444,18 @@ void refresh_settings(void)
         if (!s_link.online || !paired) lv_obj_add_flag(SS.hkrow, LV_OBJ_FLAG_CLICKABLE);
         else                             lv_obj_remove_flag(SS.hkrow, LV_OBJ_FLAG_CLICKABLE);
     } else if (idx == SET_LINK) {
-        ss_show(R_LROW);
+        ss_show(R_LACTIONS);
         uint32_t lc; const char *lt;
         if (s_link.online)   { lc = COL_GREEN;        lt = "Connected"; }
         else                 { lc = COL_ALERT_NOLINK; lt = "Offline";   }
-        chip_status(SS.ldot, SS.lconn, lc, lt);
+        chip_status(NULL, SS.lconn, lc, lt);
         if (s_zn_ui >= 1) {
             char nm[48]; zone_disp_name(s_zactive, nm, sizeof nm);
             lv_label_set_text(SS.lmeta, nm);
             ss_show(R_LMETA);
         }
-        lv_label_set_text(SS.hint, s_link.bonded
-            ? H2(H_PRESS("add zone"), H_HOLD("forget"))
-            : H_PRESS("pair"));
+        if (s_link.bonded) ss_show(R_LADD);
+        lv_label_set_text(SS.hint, s_link.bonded ? H_HOLD("forget") : H_PRESS("pair"));
         if (!s_link.online) lv_obj_add_flag(SS.lrow, LV_OBJ_FLAG_CLICKABLE);
         else                  lv_obj_remove_flag(SS.lrow, LV_OBJ_FLAG_CLICKABLE);
     } else if (idx == SET_SYSTEM) {
@@ -399,15 +495,10 @@ void refresh_settings(void)
     } else if (idx == SET_ADVANCED) {
         ss_show(R_STATUS);
         lv_label_set_text(SS.status, "Open");
-        lv_obj_set_style_text_color(SS.status, lv_color_hex(SET_COL[SET_ADVANCED]), 0);
         ss_hide(R_HINT);
     } else {
         ss_show(R_STATUS);
-        /* Settings is usually opened from the Menu, but a dialog can jump
-         * straight here from the home dial; name whichever one Back returns to. */
-        lv_label_set_text(SS.status, ui_back_target() == SCREEN_MENU ? "Exit to menu"
-                                                                    : "Exit to home");
-        lv_obj_set_style_text_color(SS.status, lv_color_hex(COL_BACK), 0);
+        lv_label_set_text(SS.status, "Return");
         ss_hide(R_HINT);
     }
 
@@ -421,6 +512,12 @@ static void settings_open(int idx)
         case SET_ADVANCED: ui_show_screen(SCREEN_ADVANCED);   break;
         default: break;
     }
+}
+
+static void settings_nav_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    settings_open(s_set_sel);
 }
 
 void settings_press(void)
@@ -470,23 +567,35 @@ void settings_node_click_cb(lv_event_t *e)
     }
 }
 
+static void settings_add_zone_click_cb(lv_event_t *e)
+{
+    if (s_cur == SCREEN_SETTINGS && s_set_sel == SET_LINK && s_link.bonded &&
+        lv_event_get_current_target(e) == SS.ladd)
+        settings_press();
+}
+
 lv_obj_t *settings_hold_arc(void) { return SS.holdArc; }
 
 void settings_hold_arm(int set_row, uint32_t col)
 {
     lv_obj_t *conn = (set_row == SET_WIFI) ? SS.wconn : SS.lconn;
-    lv_obj_t *dot  = (set_row == SET_WIFI) ? SS.wdot  : SS.ldot;
+    lv_obj_t *dot  = (set_row == SET_WIFI) ? SS.wdot  : NULL;
     chip_status(dot, conn, col, H_HOLD("confirm"));
 }
 
 void settings_set_link_text(const char *t) { lv_label_set_text(SS.lconn, t); }
+
+void settings_eat_wifi_click(void) { uig_eat_click(s_wrow_gest); }
 
 float settings_row_angle(int set_row) { return set_ang(set_row); }
 
 static void set_chip_click_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-    if (idx == SET_WIFI) { wifi_setup_entry(); return; }
+    if (idx == SET_WIFI) {
+        if (!s_wrow_gest || uig_click_is_tap(s_wrow_gest)) wifi_setup_entry();
+        return;
+    }
     if (idx == SET_HOMEKIT && s_link.online && s_state.hk_paired <= 0) {
         homekit_qr_entry();
         return;
@@ -500,5 +609,14 @@ static void set_chip_click_cb(lv_event_t *e)
     settings_chip_dialog(idx);
 }
 
-static void wifi_row_press_cb(lv_event_t *e)   { (void)e; s_set_sel = SET_WIFI; refresh_settings(); ui_button_down(); }
+static void wifi_row_press_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
+        uig_eat_click(s_wrow_gest);
+        return;
+    }
+    s_set_sel = SET_WIFI;
+    refresh_settings();
+    ui_button_down();
+}
 static void wifi_row_release_cb(lv_event_t *e) { (void)e; ui_button_up(); }

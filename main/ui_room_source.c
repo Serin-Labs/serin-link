@@ -19,7 +19,7 @@ static bool s_source_removed;
 static rim_t RR;
 
 static struct {
-    lv_obj_t *panel, *name, *hint, *position;
+    lv_obj_t *panel, *name, *hint, *position, *action;
     int first, count;
 } RP;
 
@@ -70,6 +70,12 @@ static void source_click(lv_event_t *e)
     commit_pick();
 }
 
+static void source_action_click(lv_event_t *e)
+{
+    (void)e;
+    commit_pick();
+}
+
 void build_room_source(void)
 {
     lv_obj_t *p = RP.panel = s_panel[SCREEN_ROOM_SOURCE] = mkpanel(COL_FACE, false);
@@ -95,15 +101,11 @@ void build_room_source(void)
     };
     rim_build(&RR, p, &cfg);
 
-    lv_obj_t *c = mkcol(p, SERIN_PX(310), 10, 0);
-    lv_obj_center(c);
-    RP.name = mklabel(c, FONT_SET_NAME, COL_ITEM_GREEN, "");
-    lv_obj_set_width(RP.name, SERIN_PX(310));
-    lv_obj_set_height(RP.name, lv_font_get_line_height(FONT_SET_NAME));
-    lv_obj_set_style_text_align(RP.name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(RP.name, LV_LABEL_LONG_SCROLL);
-    RP.hint = mklabel(c, FONT_HINT, COL_GREY, "");
-    RP.position = mklabel(c, FONT_STATUS, COL_DIM, "");
+    RP.name = mkslot_label(p, FONT_SET_NAME, COL_ITEM_GREEN, "", 310, SERIN_SLOT_TITLE_Y);
+    RP.position = mkslot_label(p, FONT_STATUS, COL_DIM, "", 260, SERIN_SLOT_DETAIL_Y);
+    mkslot_action(p, "Choose", source_action_click, &RP.action);
+    RP.hint = mkbody(p, FONT_HINT, COL_GREY, "", SERIN_PX(280));
+    lv_obj_align(RP.hint, LV_ALIGN_TOP_MID, 0, SERIN_PX(SERIN_SLOT_HINT_TOP));
     lv_obj_add_flag(RP.position, LV_OBJ_FLAG_HIDDEN);
     s_drawn = -1;
 }
@@ -149,13 +151,14 @@ void refresh_room_source(void)
         }
         s_drawn = s_pick;
     }
-    lv_label_set_text(RP.hint,
-        s_count == 0                                          ? "No sensors available" :
-        back && s_source_removed                              ? "Sensor no longer available" :
-        back                                                  ? H_PRESS("return") :
-        (s_options[s_pick].id == s_selected_id &&
-         s_status == SL2_ROOMST_OK)                            ? "Selected"
-                                                              : H_PRESS("choose"));
+    bool selected = !back && s_options[s_pick].id == s_selected_id && s_status == SL2_ROOMST_OK;
+    lv_label_set_text(RP.action, back ? "Return" : selected ? "Selected" : "Choose");
+    lv_obj_set_style_text_color(RP.action, lv_color_hex(selected ? COL_ITEM_GREEN : COL_WHITE), 0);
+    const char *hint = s_count == 0 ? "No sensors available"
+                    : back && s_source_removed ? "Sensor no longer available" : "";
+    lv_label_set_text(RP.hint, hint);
+    if (hint[0]) lv_obj_remove_flag(RP.hint, LV_OBJ_FLAG_HIDDEN);
+    else         lv_obj_add_flag(RP.hint, LV_OBJ_FLAG_HIDDEN);
 }
 
 void room_source_turn(int delta)

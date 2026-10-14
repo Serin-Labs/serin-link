@@ -36,7 +36,7 @@ HELP_MAP=$(run 'screen advanced; turn 1; wait 100; hitmap')
 HELP_X=$(awk '$1 == "hit" && $NF == "text=i" { sub("x=", "", $2); print $2; exit }' <<<"$HELP_MAP")
 HELP_Y=$(awk '$1 == "hit" && $NF == "text=i" { sub("y=", "", $3); print $3; exit }' <<<"$HELP_MAP")
 [ -n "$HELP_X" ] && [ -n "$HELP_Y" ] || { echo 'FAIL: Advanced info target is missing'; exit 1; }
-OUT=$(run "screen advanced; turn 1; tap $HELP_X $HELP_Y; labels; info")
+OUT=$(run "screen advanced; turn 1; wait 200; tap $HELP_X $HELP_Y; labels; info")
 require "$OUT" 'label text=Child Lock' 'help press did not open the existing dialog'
 require "$OUT" 'dlg=other' 'help press did not leave an info dialog open'
 [ "$PREFS_BEFORE" = "$(cksum "$WORK/.prefs")" ] || {
@@ -50,7 +50,7 @@ require "$OUT" 'lock=1' 'a turn while editing Child Lock traversed focus instead
 TRANS_MAP=$(run 'screen advanced; turn 4; wait 100; hitmap')
 TRANS_X=$(awk '$1 == "hit" && $NF == "text=i" { sub("x=", "", $2); print $2; exit }' <<<"$TRANS_MAP")
 TRANS_Y=$(awk '$1 == "hit" && $NF == "text=i" { sub("y=", "", $3); print $3; exit }' <<<"$TRANS_MAP")
-OUT=$(run "screen advanced; turn 4; labels; tap $TRANS_X $TRANS_Y; labels")
+OUT=$(run "screen advanced; turn 4; wait 200; labels; tap $TRANS_X $TRANS_Y; labels")
 require "$OUT" 'label text=Transitions' 'Motion was not renamed to Transitions'
 require "$OUT" 'label text=Fades between screens. Off changes screens immediately.' 'Transitions explainer copy is wrong'
 
@@ -84,9 +84,8 @@ check_options() { # turns left-label right-label [has-info]
         }
     done
 
-    # hitmap reports the actual click rectangle's centre and dimensions. Touch
-    # rectangles may share an edge, but a positive-area intersection hands the
-    # overlap to whichever sibling LVGL finds first and is therefore a bug.
+    # Option slots must not overlap. advanced_touch.py also checks the full
+    # help target and dispatch at the edges of every option and ring control.
     overlaps() { # <hitmap line> <hitmap line>
         awk -v a="$1" -v b="$2" '
             function n(s) { sub("^[^=]*=", "", s); return s + 0 }
@@ -101,9 +100,8 @@ check_options() { # turns left-label right-label [has-info]
                 exit !(ax1 <= bx2 && bx1 <= ax2 && ay1 <= by2 && by1 <= ay2)
             }'
     }
-    if overlaps "$l" "$r" || { [ "$has_info" = yes ] && overlaps "$l" "$info"; } ||
-       { [ "$has_info" = yes ] && overlaps "$r" "$info"; }; then
-        echo "FAIL: $left/$right or its info target has overlapping live touch rectangles"
+    if overlaps "$l" "$r"; then
+        echo "FAIL: $left/$right has overlapping live touch rectangles"
         echo "$l"; echo "$r"; echo "$info"; exit 1
     fi
 
@@ -136,5 +134,8 @@ check_options 1 Off On
 check_options 2 Glance Off
 check_options 3 Off On
 check_options 4 Off On
+
+python3 "$(dirname "$0")/advanced_touch.py"
+python3 "$(dirname "$0")/advanced_layout.py"
 
 echo 'advanced: OK'

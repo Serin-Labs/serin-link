@@ -16,7 +16,8 @@ static bool         s_fan_leave_pending;
 
 static struct { lv_obj_t *vtile, *vimg, *vpill;
                 lv_obj_t *ftile, *fbar, *fpill, *ficon;
-                lv_obj_t *htile, *himg, *hpill;          } F;
+                lv_obj_t *htile, *himg, *hpill;
+                lv_obj_t *back_name, *back;            } F;
 
 static void fan_focus_cb(lv_event_t *e);
 static void vane_step(bool horiz, int delta, bool wrap);
@@ -362,6 +363,12 @@ static void fan_rim_click_cb(lv_event_t *e)
     refresh_fanvane();
 }
 
+static void fan_return_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_back();
+}
+
 void build_fanvane(void)
 {
     lv_obj_t *p = s_panel[SCREEN_FANVANE] = mkpanel(COL_FACE, false);
@@ -419,6 +426,10 @@ void build_fanvane(void)
         .no_ind = true,
     };
     rim_build(&FR, p, &cfg);
+    F.back_name = mkslot_label(p, FONT_SET_NAME, COL_BACK, "Back", 260, SERIN_SLOT_TITLE_Y);
+    F.back = mkslot_action(p, "Return", fan_return_cb, NULL);
+    lv_obj_add_flag(F.back_name, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(F.back, LV_OBJ_FLAG_HIDDEN);
 }
 
 #define FAN_SEG_HALF_MAX 26.0f
@@ -496,8 +507,15 @@ void refresh_fanvane(void)
     }
     lv_obj_t *tiles[3] = { F.ftile, F.vtile, F.htile };
     for (int f = 0; f < 3; f++) {
-        if (f == s_fan_disp) lv_obj_remove_flag(tiles[f], LV_OBJ_FLAG_HIDDEN);
-        else                 lv_obj_add_flag(tiles[f], LV_OBJ_FLAG_HIDDEN);
+        if (armed >= 0 && f == s_fan_disp) lv_obj_remove_flag(tiles[f], LV_OBJ_FLAG_HIDDEN);
+        else                             lv_obj_add_flag(tiles[f], LV_OBJ_FLAG_HIDDEN);
+    }
+    if (armed < 0) {
+        lv_obj_remove_flag(F.back_name, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(F.back, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(F.back_name, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(F.back, LV_OBJ_FLAG_HIDDEN);
     }
 
     uint32_t vCol = (armed == 1) ? accent : COL_GREY;
@@ -530,7 +548,7 @@ void refresh_fanvane(void)
         FR.col[i] = c;
         rim_tint(&FR, i, c);
     }
-    rim_select(&FR, s_fan_sel, accent);
+    rim_select(&FR, s_fan_sel, armed < 0 ? COL_BACK : accent);
 }
 
 void fanvane_press(void)

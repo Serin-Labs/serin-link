@@ -35,6 +35,11 @@ lv_obj_t *mkrow(lv_obj_t *parent, int32_t pad_col);
 lv_obj_t *mkpillrow(lv_obj_t *parent, int32_t gap, int32_t pad_top_extra);
 lv_obj_t *mkpill(lv_obj_t *parent, const char *text, uint32_t txt_col,
                  int radius, int pad_h, int pad_v);
+lv_obj_t *mkslot_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color,
+                      const char *text, int width, int design_y);
+/* Return the full touch target; out_label may be NULL for a static action. */
+lv_obj_t *mkslot_action(lv_obj_t *parent, const char *text, lv_event_cb_t on_click,
+                       lv_obj_t **out_label);
 void      press_ack(lv_obj_t *o, lv_opa_t opa);
 void      ui_fade_in(lv_obj_t *obj, uint32_t ms);
 void      ui_fade_out(lv_obj_t *obj, uint32_t ms, lv_anim_completed_cb_t done);

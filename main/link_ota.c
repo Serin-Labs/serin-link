@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -40,11 +42,17 @@ static const char *TAG = "link_ota";
 #endif
 
 #define CREDS_TIMEOUT_MS   5000
-#define SNTP_TIMEOUT_MS    2000
+#define SNTP_TIMEOUT_MS    6000
+#define SNTP_POLL_MS       200
 #define CONFIRM_TIMEOUT_MS 60000
 #define MANIFEST_MAX       4096
 #define MANIFEST_MAX_REDIRECTS 4
 #define OTA_HTTP_BUF       4096
+/* download() result for an image built for the other board. */
+#define OTA_ERR_WRONG_BOARD ESP_ERR_NOT_ALLOWED
+
+_Static_assert(sizeof(((esp_app_desc_t *)0)->project_name) == OTA_PROJECT_NAME_LEN,
+               "ota_same_board compares the whole project_name field");
 
 static volatile bool s_running;
 static volatile bool s_cancel;
@@ -86,12 +94,16 @@ static void ota_guard_task(void *arg)
     vTaskDelete(NULL);
 }
 
+bool link_ota_soaking(void)
+{
+    esp_ota_img_states_t st;
+    return esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+           st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
 void link_ota_init(void)
 {
-    const esp_partition_t *run = esp_ota_get_running_partition();
-    esp_ota_img_states_t st;
-    if (esp_ota_get_state_partition(run, &st) != ESP_OK ||
-        st != ESP_OTA_IMG_PENDING_VERIFY)
+    if (!link_ota_soaking())
         return;
 
     if (xTaskCreate(ota_guard_task, "ota_guard", VALID_TASK_STACK, NULL, 3, NULL) != pdPASS) {
@@ -103,6 +115,14 @@ void link_ota_init(void)
 static void ota_ui(ota_ui_t st, int pct, const char *txt)
 {
     if (lvgl_port_lock(0)) { ui_set_ota(st, pct, txt); lvgl_port_unlock(); }
+}
+
+bool link_ota_refuse_restart(void)
+{
+    if (!link_ota_soaking()) return false;
+    ESP_LOGW(TAG, "restart refused: the update is still in its soak");
+    ota_ui(OTA_UI_FAIL, 0, LINK_OTA_SOAK_MSG);
+    return true;
 }
 
 #define OTA_BETA_PREF  "ota_beta"
@@ -291,6 +311,21 @@ static esp_err_t download(const char *fw_url, int plain_size, const char *sha_he
     esp_https_ota_handle_t h = NULL;
     esp_err_t err = esp_https_ota_begin(&oc, &h);
     if (err != ESP_OK) return err;
+    /* Both boards' images share one format and one signing key, so only the
+       project name stops a 2.1" image from installing on a 1.5" dial. */
+    esp_app_desc_t img;
+    err = esp_https_ota_get_img_desc(h, &img);
+    if (err != ESP_OK) {
+        esp_https_ota_abort(h);
+        return err;
+    }
+    const char *mine = esp_app_get_description()->project_name;
+    if (!ota_same_board(mine, img.project_name)) {
+        ESP_LOGE(TAG, "wrong board image: \"%.*s\", this dial runs \"%s\"",
+                 OTA_PROJECT_NAME_LEN, img.project_name, mine);
+        esp_https_ota_abort(h);
+        return OTA_ERR_WRONG_BOARD;
+    }
     int last_pct = -1;
     while ((err = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
         if (s_cancel) {
@@ -343,10 +378,29 @@ static void ota_task(void *arg)
     memset(psk, 0, sizeof(psk));
 
     {
+        /* TLS checks certificate dates (CONFIG_MBEDTLS_HAVE_TIME_DATE), so an
+           unset clock would fail every handshake. Short waits keep Cancel
+           live. Without SNTP the clock is at least the build time, so updates
+           still work behind a network that blocks NTP. */
         esp_sntp_config_t sc = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
         esp_netif_sntp_init(&sc);
-        esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_TIMEOUT_MS));
+        bool synced = false;
+        for (int ms = 0; ms < SNTP_TIMEOUT_MS && !synced && !s_cancel; ms += SNTP_POLL_MS)
+            synced = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_POLL_MS)) == ESP_OK;
         esp_netif_sntp_deinit();
+        if (!synced && !s_cancel) {
+            const esp_app_desc_t *app = esp_app_get_description();
+            int64_t now = (int64_t)time(NULL);
+            int64_t use = ota_clock_floor(now, ota_build_epoch(app->date, app->time));
+            if (use != now) {
+                struct timeval tv = { .tv_sec = (time_t)use };
+                settimeofday(&tv, NULL);
+                ESP_LOGW(TAG, "no SNTP time in %d ms; clock set to the build time %s %s, "
+                         "so a certificate issued after it fails", SNTP_TIMEOUT_MS, app->date, app->time);
+            } else {
+                ESP_LOGW(TAG, "no SNTP time in %d ms; keeping the current clock", SNTP_TIMEOUT_MS);
+            }
+        }
     }
     if (s_cancel) goto done;
 
@@ -397,11 +451,12 @@ static void ota_task(void *arg)
         ota_ui(OTA_UI_DOWNLOAD, 0, NULL);
         esp_err_t err = download(fw_url, size, sha);
         if (err == ESP_ERR_NOT_FINISHED) goto done;
+        if (err == OTA_ERR_WRONG_BOARD) { fail = "Wrong board image"; goto done; }
         if (err != ESP_OK) { fail = "Download failed"; goto done; }
 
         ota_ui(OTA_UI_OK, 100, NULL);
         ESP_LOGI(TAG, "update installed, restarting");
-        vTaskDelay(pdMS_TO_TICKS(1500));
+        vTaskDelay(pdMS_TO_TICKS(4000));   /* time to read the soak warning */
         esp_restart();
     }
 

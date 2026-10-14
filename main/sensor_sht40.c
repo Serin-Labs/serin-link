@@ -28,19 +28,14 @@ static const char *TAG = "sensor_sht40";
 #define SHT40_MEAS_MS     10
 #define SAMPLE_MS         10000
 #define FAIL_BACKOFF_MS   (SAMPLE_MS * 2)
-#define AIRFLOW_TAU_IN_MS   600000
-#define AIRFLOW_TAU_OUT_MS 1500000
 #define TEMP_FILTER_TAU_MS   60000
 #define MAX_FAILS         3
 #define PROBE_TRIES       3
 #define PROBE_RETRY_MS    100
 #define BUS_MUX_MS        1000
 #define PREF_OFFSET_KEY   "sht_off_cc"
-#define PREF_AIRFLOW_KEY  "sht_air_cc"
 #define OFFSET_MIN_CC     (-2000)
 #define OFFSET_MAX_CC       2000
-#define AIRFLOW_MIN_CC         0
-#define AIRFLOW_MAX_CC      2000
 #define SCAN_PASSES         3
 
 static i2c_master_bus_handle_t s_bus;
@@ -52,9 +47,6 @@ static volatile int16_t  s_base_cc;
 
 static volatile bool     s_idle_off;
 
-static volatile bool     s_airflow;
-static volatile int32_t  s_air_q8;
-static volatile int16_t  s_air_delta_cc;
 static volatile int32_t  s_filt_q8;
 
 static volatile bool     s_valid;
@@ -176,9 +168,6 @@ static void sht40_task(void *arg)
         }
 
         const uint32_t delay_ms = fails < MAX_FAILS ? SAMPLE_MS : FAIL_BACKOFF_MS;
-        s_air_q8 = sht40_airflow_regime_step_q8(s_air_q8, s_airflow,
-                       s_air_delta_cc,
-                       delay_ms, AIRFLOW_TAU_IN_MS, AIRFLOW_TAU_OUT_MS);
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 }
@@ -187,9 +176,8 @@ bool sensor_sht40_present(void) { return s_present; }
 
 static int16_t offset_eff(void)
 {
-    return sht40_offset_eff_air(s_base_cc, s_idle_off,
-                                CONFIG_SERIN_SHT40_IDLE_OFF_DELTA_CC,
-                                s_air_q8);
+    return sht40_offset_eff(s_base_cc, s_idle_off,
+                            CONFIG_SERIN_SHT40_IDLE_OFF_DELTA_CC);
 }
 
 bool sensor_sht40_read(int16_t *temp_cc, uint16_t *hum_cc, uint32_t *age_ms)
@@ -248,28 +236,6 @@ void sensor_sht40_set_idle_off(bool off)
     ESP_LOGI(TAG, "idle screen %s -> offset %s C", off ? "off" : "glance", eff_s);
 }
 
-void sensor_sht40_set_airflow(bool on)
-{
-    if (on == s_airflow) return;
-    s_airflow = on;
-    if (!s_present) return;
-    char tgt_s[8];
-    fmt_cc(tgt_s, sizeof tgt_s, on ? s_air_delta_cc : 0);
-    ESP_LOGI(TAG, "airflow %s -> easing offset reduction toward %s C (tau %ds)",
-             on ? "on" : "off", tgt_s,
-             (on ? AIRFLOW_TAU_IN_MS : AIRFLOW_TAU_OUT_MS) / 1000);
-}
-
-void sensor_sht40_set_airflow_delta_cc(int16_t cc)
-{
-    s_air_delta_cc = cc;
-    prefs_set_i16(PREF_AIRFLOW_KEY, cc);
-    char d_s[8];
-    fmt_cc(d_s, sizeof d_s, cc);
-    ESP_LOGI(TAG, "airflow delta set to %s C (air %s)", d_s,
-             s_airflow ? "on" : "off");
-}
-
 static int cmd_sensor(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -294,12 +260,8 @@ static int cmd_sensor(int argc, char **argv)
     } else {
         snprintf(mode, sizeof mode, "idle=glance");
     }
-    char air_s[8], delta_s[8];
-    fmt_cc(air_s,   sizeof air_s,   sht40_q8_to_cc(s_air_q8));
-    fmt_cc(delta_s, sizeof delta_s, s_air_delta_cc);
-    printf("sht4x: raw %s C  filt %s C (tau %ds)  offset %s (base %s, %s, air=%s -%s of %s)  corrected %s C  rh %s%%  age %lums\n",
+    printf("sht4x: raw %s C  filt %s C (tau %ds)  offset %s (base %s, %s)  corrected %s C  rh %s%%  age %lums\n",
            raw_s, filt_s, TEMP_FILTER_TAU_MS / 1000, off_s, base_s, mode,
-           s_airflow ? "on" : "off", air_s, delta_s,
            cor_s, rh_s, (unsigned long)age_ms);
     return 0;
 }
@@ -328,15 +290,6 @@ static int cmd_sensor_offset(int argc, char **argv)
     if (!parse_cc_arg("sensor-offset", argc, argv, OFFSET_MIN_CC, OFFSET_MAX_CC, &v))
         return 1;
     sensor_sht40_set_base_offset_cc((int16_t)v);
-    return 0;
-}
-
-static int cmd_sensor_airflow(int argc, char **argv)
-{
-    long v;
-    if (!parse_cc_arg("sensor-airflow", argc, argv, AIRFLOW_MIN_CC, AIRFLOW_MAX_CC, &v))
-        return 1;
-    sensor_sht40_set_airflow_delta_cc((int16_t)v);
     return 0;
 }
 
@@ -372,10 +325,8 @@ static void register_console(void)
     const esp_console_cmd_t cmds[] = {
         { .command = "sensor", .help = "SHT4x reading (raw, offset, corrected)",
           .func = cmd_sensor },
-        { .command = "sensor-offset", .help = "Set SHT4x base STILL-AIR self-heating offset, HVAC idle (centi-C)",
+        { .command = "sensor-offset", .help = "Set SHT4x base self-heating offset (centi-C)",
           .func = cmd_sensor_offset },
-        { .command = "sensor-airflow", .help = "Set SHT4x offset reduction while the unit moves air, full scale (centi-C; per-install)",
-          .func = cmd_sensor_airflow },
         { .command = "i2c-scan", .help = "Scan the sensor I2C bus", .func = cmd_i2c_scan },
     };
     for (unsigned i = 0; i < sizeof cmds / sizeof cmds[0]; i++)
@@ -397,9 +348,6 @@ bool sensor_sht40_init(void)
             s_base_cc = CONFIG_SERIN_SHT40_OFFSET_CC;
         }
     }
-    s_air_delta_cc = prefs_get_i16(PREF_AIRFLOW_KEY, INT16_MIN);
-    if (s_air_delta_cc == INT16_MIN)
-        s_air_delta_cc = CONFIG_SERIN_SHT40_AIRFLOW_DELTA_CC;
     s_bus_mux   = xSemaphoreCreateMutex();
     register_console();
 
@@ -424,9 +372,9 @@ bool sensor_sht40_init(void)
     }
 
     xTaskCreate(sht40_task, "sht40", 3072, NULL, 3, NULL);
-    ESP_LOGI(TAG, "sampling every %d ms, filter tau %d s, offset %d centi-C (base %d, idle %s, airflow delta %d)",
+    ESP_LOGI(TAG, "sampling every %d ms, filter tau %d s, offset %d centi-C (base %d, idle %s)",
              SAMPLE_MS, TEMP_FILTER_TAU_MS / 1000, offset_eff(), s_base_cc,
-             s_idle_off ? "off" : "glance", s_air_delta_cc);
+             s_idle_off ? "off" : "glance");
     return true;
 }
 

@@ -23,6 +23,64 @@ config SERIN_BOARD_VIEWE_21
 
 endchoice
 
+choice SERIN_PM_MIN_FREQ
+    prompt "Idle CPU frequency"
+    depends on PM_ENABLE
+    default SERIN_PM_MIN_80
+    help
+        Keep the configured maximum CPU speed for runnable work, and lower it
+        while idle. Automatic light sleep remains disabled. Peripheral PM
+        locks can keep the CPU above this minimum (notably PCNT on VIEWE 2.1).
+
+config SERIN_PM_MIN_80
+    bool "80 MHz"
+
+config SERIN_PM_MIN_40
+    bool "40 MHz (bench comparison)"
+
+endchoice
+
+config SERIN_PM_MIN_FREQ_MHZ
+    int
+    default 40 if SERIN_PM_MIN_40
+    default 80
+
+config SERIN_LVGL_MONOTONIC_TICK
+    bool "Use elapsed time instead of the periodic LVGL tick"
+    default y
+    help
+        Stop the port's 5 ms tick timer and read esp_timer time through LVGL's
+        tick callback. LVGL timers, input events, and its watchdog remain live.
+        Disable only for a baseline comparison. Do not call lvgl_port_resume()
+        after display_runtime_start(): the application owns tick scheduling.
+
+config SERIN_INPUT_POWER_SAVE
+    bool "Stop knob/button sampling while idle"
+    depends on SERIN_BOARD_VIEWE_15
+    default y
+    select GPIO_BUTTON_SUPPORT_POWER_SAVE
+    help
+        Use the pinned drivers' GPIO interrupts to restart sampling on input.
+        This does not enable automatic light sleep or change gesture timing.
+
+config SERIN_LCD_BLOCKING_FLUSH
+    bool "Block while waiting for QSPI display DMA"
+    depends on SERIN_BOARD_VIEWE_15
+    default y
+    help
+        Wait for a completion semaphore instead of spinning on LVGL's flushing
+        flag. Drawing can still overlap DMA using the second buffer.
+
+config SERIN_LCD_BUFFER_ROWS
+    int "QSPI draw-buffer rows (per buffer)"
+    depends on SERIN_BOARD_VIEWE_15
+    default 60
+    range 2 466
+    help
+        Must be even: the panel's invalidated areas are rounded to two pixels.
+        60 rows use 109.22 KiB for the pair. 30 rows use 54.61 KiB but may add
+        transfer overhead. Compare response time and DMA heap before changing.
+
 # The public symbol and source filenames predate the production sensor choice.
 # Keep them stable so existing sdkconfig overlays continue to work; the fitted
 # carrier sensor is an SHT41.
@@ -128,44 +186,15 @@ config SERIN_SHT40_IDLE_OFF_DELTA_CC
         i.e. exactly the behaviour before this existed; the board overlay pins
         the measured value.
 
-config SERIN_SHT40_AIRFLOW_DELTA_CC
-    int "SHT41 offset reduction while the unit moves air (centi-degrees C)"
-    depends on SERIN_SHT40
-    default 0
-    range 0 2000
-    help
-        Eased off SERIN_SHT40_OFFSET_CC (first-order; ~10 min easing in,
-        ~25 min easing back out) while the bonded unit's indoor blower runs
-        -- the STATE stream's
-        action byte says heating/cooling/drying/fan. Self-heating rise is
-        P/(h*A): forced room air past the dial raises h, so the sensor
-        genuinely sits cooler and LESS must be corrected away.
-
-        Forced air reduces the still-air residual, easing in with tau ~10 min
-        and recovering over ~25 min -- the
-        enclosure re-soaks under natural convection far slower than forced
-        air strips it -- so the blend is asymmetric; see
-        sht40_airflow_regime_step_q8.
-
-        OFFSET_CC is therefore defined as the STILL-AIR value: calibrate it
-        with the HVAC not actively running, and let this term handle the rest.
-
-        PER-INSTALL, not per-board: the
-        number depends on where the dial sits relative to the supply air, so
-        like the base offset it lives in NVS (`sht_air_cc`, set with
-        `sensor-airflow`); this symbol is only the default for a unit never
-        trimmed. 0 = the fixed-offset behaviour from before this existed, and
-        the safe default: an under-correction shows only while the fan runs,
-        an over-correction lingers ~40 min after it stops. Recipe: one cooling
-        run of 45 min or more with this at 0; delta = (still-air residual
-        before) - (residual 30-45 min in); below ~6 leave it at 0.
-
 config SERIN_PERF_STATS
-    bool "Perf instrumentation (render/flush timing, heap, CPU share)"
+    bool "Perf instrumentation (render/transfer timing, heap, interval CPU share)"
     default n
     help
-        Build the perf_stats harness: LVGL render/flush microsecond timing,
-        heap-headroom logs and perf-dump/perf-glide/perf-nav console commands.
+        Build the perf_stats harness: LVGL render, flush-call, flush-wait, and
+        QSPI-completion timing; heap headroom; CPU shares over each interval.
+        Use perf-reset/perf-dump for explicit measurement windows,
+        perf-glide/perf-nav for scripted workloads, and perf-pm for PM locks.
+        There is no periodic reporting task after console registration.
         Enable via the sdkconfig.perf overlay, e.g.
         -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.viewe;sdkconfig.perf".
         Do not use LV_USE_PERF_MONITOR instead — it counts refr ticks, not

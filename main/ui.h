@@ -228,7 +228,7 @@ void ui_set_on_room_source_id(void (*cb)(uint64_t source_id));
 
 typedef enum { PAIR_UI_HIDDEN, PAIR_UI_PROMPT, PAIR_UI_SEARCHING,
                PAIR_UI_OK, PAIR_UI_FAIL, PAIR_UI_FULL,
-               PAIR_UI_MISMATCH } pair_ui_t;
+               PAIR_UI_MISMATCH, PAIR_UI_SAVED } pair_ui_t;
 void        ui_set_pairing(pair_ui_t state, uint8_t channel);
 
 typedef enum { OTA_UI_HIDDEN, OTA_UI_CHECKING, OTA_UI_CONFIRM, OTA_UI_DOWNLOAD,

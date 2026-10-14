@@ -79,29 +79,7 @@ static inline int32_t sht40_lpf_step_q8(int32_t cur_q8, int16_t target_cc,
     return cur_q8 + (int32_t)(((int64_t)(tgt_q8 - cur_q8) * dt_ms) / tau_ms);
 }
 
-static inline int32_t sht40_airflow_step_q8(int32_t cur_q8, int16_t target_cc,
-                                            uint32_t dt_ms, uint32_t tau_ms)
-{
-    return sht40_lpf_step_q8(cur_q8, target_cc, dt_ms, tau_ms);
-}
-
-static inline int32_t sht40_airflow_regime_step_q8(int32_t cur_q8, bool airflow,
-                                                   int16_t delta_cc, uint32_t dt_ms,
-                                                   uint32_t tau_in_ms,
-                                                   uint32_t tau_out_ms)
-{
-    return sht40_airflow_step_q8(cur_q8, airflow ? delta_cc : 0, dt_ms,
-                                 airflow ? tau_in_ms : tau_out_ms);
-}
-
 static inline int16_t sht40_q8_to_cc(int32_t q8)
 {
     return (int16_t)((q8 >= 0 ? q8 + 128 : q8 - 128) / 256);
-}
-
-static inline int16_t sht40_offset_eff_air(int16_t base, bool idle_off,
-                                           int16_t delta_cc, int32_t air_q8)
-{
-    return (int16_t)(sht40_offset_eff(base, idle_off, delta_cc)
-                     - sht40_q8_to_cc(air_q8));
 }

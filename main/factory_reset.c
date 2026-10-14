@@ -83,9 +83,12 @@ void factory_reset_face_build(int pct)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "bsp.h"
+#include "link_ota.h"
 
 void factory_reset_execute(void)
 {
+    /* A restart now would bring the previous version back on wiped settings. */
+    if (link_ota_refuse_restart()) return;
     nvs_handle_t h;
     if (nvs_open("serin",  NVS_READWRITE, &h) == ESP_OK) { nvs_erase_all(h); nvs_commit(h); nvs_close(h); }
     if (nvs_open("espnow", NVS_READWRITE, &h) == ESP_OK) { nvs_erase_all(h); nvs_commit(h); nvs_close(h); }
@@ -96,6 +99,9 @@ void factory_reset_boot_check(void)
 {
     if (!reset_gesture_boot_armed(esp_reset_reason() == ESP_RST_POWERON,
                                   bsp_button_pressed())) return;
+    /* Power cut on the Installed face: the first boot is a power-on and still
+       soaking. Skip the hold, since the refusal needs the UI that is not up yet. */
+    if (link_ota_soaking()) return;
 
     lv_obj_t *face = NULL, *arc = NULL;
     if (lvgl_port_lock(0)) {

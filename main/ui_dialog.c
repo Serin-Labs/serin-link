@@ -162,7 +162,7 @@ static void dlg_do_action(void)
 {
     dlg_action_t act = s_dlg_action;
     dlg_hide(true);
-    if (act != DLG_DISMISS_BATT && child_lock_engaged(&s_child_lock) && home_face_live()) { child_lock_pill_flash(); return; }
+    if (s_cur == SCREEN_THERMOSTAT && act != DLG_DISMISS_BATT && home_lock_gates()) { child_lock_pill_flash(); return; }
     switch (act) {
         case DLG_NONE:
             break;
@@ -591,6 +591,11 @@ static void reset_wipe_cb(lv_timer_t *t)
 {
     lv_timer_delete(t);
     factory_reset_execute();
+    /* It returns only when it refused (an update still in its soak) and has
+     * shown why. Drop the face so the dial is usable again. */
+    if (s_reset_face) lv_obj_delete(s_reset_face);
+    s_reset_face = NULL;
+    s_resetting = false;
 }
 
 static void reset_face_show(void)

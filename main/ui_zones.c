@@ -26,8 +26,7 @@ void zones_turn(int delta)
     refresh_zones();
 }
 
-static struct { lv_obj_t *name, *statRow, *nowNum, *deg,
-                         *modeTxt, *stateRow, *badge; } ZP;
+static struct { lv_obj_t *name, *nowNum, *deg, *modeTxt, *badge, *back; } ZP;
 
 static uint32_t zone_badge_col(ui_zone_badge_t b) {
     switch (b) {
@@ -57,6 +56,12 @@ void zones_commit(void);
 static void zone_node_click_cb(lv_event_t *e) {
     s_zone_sel = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
     zones_commit();
+}
+
+static void zone_return_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_back();
 }
 
 static const char *zone_state_txt(const ui_zone_info_t *z)
@@ -102,10 +107,17 @@ void refresh_zones(void) {
         lv_label_set_text(ZP.name, "Back");
         lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_BACK), 0);
-        lv_obj_add_flag(ZP.statRow,  LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ZP.stateRow, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ZP.nowNum, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ZP.deg, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ZP.modeTxt, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ZP.badge, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(ZP.back, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    lv_obj_add_flag(ZP.back, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(ZP.nowNum, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(ZP.modeTxt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(ZP.badge, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_WHITE), 0);
     char nm[48]; zone_disp_name(s_zone_sel, nm, sizeof nm);
     lv_label_set_text(ZP.name, nm);
@@ -114,33 +126,33 @@ void refresh_zones(void) {
      * the rim.  The fixed one-line box prevents it from moving the readout. */
     lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_SCROLL);
     const ui_zone_info_t *z = &s_zinfo[s_zone_sel];
-    lv_obj_remove_flag(ZP.stateRow, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text_fmt(ZP.badge, "%s%s", zone_badge_txt(z->badge),
                           s_zone_sel == s_zactive ? " \xC2\xB7 Active" : "");
     lv_obj_set_style_text_color(ZP.badge, lv_color_hex(zone_badge_col(z->badge)), 0);
     if (!z->have_state) {
-        lv_obj_add_flag(ZP.statRow, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(ZP.modeTxt, "");
+        lv_label_set_text(ZP.nowNum, "--");
+        lv_obj_add_flag(ZP.deg, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_opa(ZP.nowNum, LV_OPA_COVER, 0);
+        lv_label_set_text(ZP.modeTxt, "No reading yet");
         return;
     }
-    lv_obj_remove_flag(ZP.statRow, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text_fmt(ZP.nowNum, "%d", z->room_temp);
-    lv_opa_t nowOpa = (z->badge == UI_ZB_OFFLINE || z->badge == UI_ZB_STALE)
-                    ? REMIND_HERO_OPA : LV_OPA_COVER;
-    lv_obj_set_style_text_opa(ZP.nowNum, nowOpa, 0);
-    lv_obj_set_style_text_opa(ZP.deg,    nowOpa, 0);
+    lv_obj_remove_flag(ZP.deg, LV_OBJ_FLAG_HIDDEN);
+    bool last = z->badge == UI_ZB_OFFLINE || z->badge == UI_ZB_STALE;
+    lv_obj_set_style_text_opa(ZP.nowNum, last ? REMIND_HERO_OPA : LV_OPA_COVER, 0);
+    lv_obj_set_style_text_opa(ZP.deg, last ? REMIND_HERO_OPA : LV_OPA_COVER, 0);
+    /* Center the number itself; the degree suffix must not shift its axis.
+     * Reposition after layout because the reading can change digit count. */
+    lv_obj_update_layout(s_panel[SCREEN_ZONES]);
+    lv_obj_align_to(ZP.deg, ZP.nowNum, LV_ALIGN_OUT_RIGHT_MID, 0, 0);
+    const char *prefix = last ? "Last \xC2\xB7 " : "";
     char tgt[36];
     bool band = (z->mode == MODE_HEAT_COOL && z->band_valid);
     if (zone_target_txt(z, tgt, sizeof tgt))
-        lv_label_set_text_fmt(ZP.modeTxt, band ? "%s %s" : "%s to %s",
-                              zone_state_txt(z), tgt);
+        lv_label_set_text_fmt(ZP.modeTxt, band ? "%s%s %s" : "%s%s to %s",
+                              prefix, zone_state_txt(z), tgt);
     else
-        lv_label_set_text(ZP.modeTxt, zone_state_txt(z));
-    bool zoff = (z->mode == MODE_OFF || z->status == ST_OFF);
-    lv_obj_set_style_text_color(ZP.modeTxt,
-                                lv_color_hex(zoff ? COL_GREY : mode_accent(z->mode)), 0);
-    lv_obj_update_layout(s_panel[SCREEN_ZONES]);
-    lv_obj_align_to(ZP.deg, ZP.nowNum, LV_ALIGN_OUT_RIGHT_MID, 0, 0);
+        lv_label_set_text_fmt(ZP.modeTxt, "%s%s", prefix, zone_state_txt(z));
 }
 
 static const serin_icon_t *zone_digit_glyph(int i)
@@ -180,20 +192,15 @@ void build_zones(void) {
     };
     rim_build(&ZR, p, &cfg);
 
-    lv_obj_t *c = mkcol(p, SERIN_PX(320), 10, 0);
-    lv_obj_center(c);
-    ZP.name = mklabel(c, FONT_SET_NAME, COL_WHITE, "");
-    lv_obj_set_width(ZP.name, SERIN_PX(310));
-    lv_obj_set_height(ZP.name, lv_font_get_line_height(FONT_SET_NAME));
-    lv_obj_set_style_text_align(ZP.name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_DOT);
-    lv_obj_t *row = ZP.statRow = mkcol(c, LV_PCT(100), 4, 0);
-    ZP.nowNum  = mklabel(row, FONT_SSID, COL_WHITE, "");
-    ZP.deg  = mklabel(row, FONT_SSID, COL_WHITE, "\xC2\xB0");
-    lv_obj_add_flag(ZP.deg, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    ZP.modeTxt = mklabel(row, FONT_DIAL_NOW, COL_GREY, "");
-    lv_obj_t *sr = ZP.stateRow = mkrow(c, 0);
-    ZP.badge = mklabel(sr, FONT_HINT, COL_GREY, "");
+    ZP.name = mkslot_label(p, FONT_SET_NAME, COL_WHITE, "", 310, SERIN_SLOT_TITLE_Y);
+    ZP.modeTxt = mkslot_label(p, FONT_STATUS, COL_GREY, "", 260, SERIN_SLOT_DETAIL_Y);
+    ZP.nowNum = mkslot_label(p, FONT_SSID, COL_WHITE, "", 230, SERIN_SLOT_CONTROL_Y);
+    lv_obj_set_width(ZP.nowNum, LV_SIZE_CONTENT);
+    ZP.deg = mklabel(p, FONT_SSID, COL_WHITE, "\xC2\xB0");
+    ZP.badge = mklabel(p, FONT_HINT, COL_GREY, "");
+    lv_obj_align(ZP.badge, LV_ALIGN_TOP_MID, 0, SERIN_PX(SERIN_SLOT_HINT_TOP));
+    ZP.back = mkslot_action(p, "Return", zone_return_cb, NULL);
+    lv_obj_add_flag(ZP.back, LV_OBJ_FLAG_HIDDEN);
     s_zone_sel = s_zactive;
 }
 

@@ -69,3 +69,56 @@ static inline ota_guard_act_t ota_guard_decide(int64_t up_ms, bool healthy,
     if (up_ms >= deadline_ms)        return OTA_GUARD_ROLLBACK;
     return OTA_GUARD_WAIT;
 }
+
+/* esp_app_desc_t.project_name. The build stamps the board into it
+   (main/project_include.cmake), and both boards share one image format, so the
+   name is the only thing that tells a 1.5" image from a 2.1" one. A downloaded
+   descriptor is untrusted and may fill all 32 bytes without a NUL. */
+#define OTA_PROJECT_NAME_LEN 32
+/* Every image published before the per-board name carries this one. The
+   manifest already picks the image by board id, so accepting it is no weaker
+   than before the name check existed. */
+#define OTA_LEGACY_PROJECT_NAME "serin_link"
+
+static inline bool ota_same_board(const char *running, const char *incoming)
+{
+    if (incoming[0] == '\0') return false;
+    if (strncmp(incoming, OTA_LEGACY_PROJECT_NAME, OTA_PROJECT_NAME_LEN) == 0) return true;
+    return strncmp(running, incoming, OTA_PROJECT_NAME_LEN) == 0;
+}
+
+static inline int64_t ota_days_from_civil(int y, int m, int d)
+{
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int yoe = (int)(y - era * 400);
+    const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/* The firmware's build time from esp_app_desc_t.date ("Oct 12 2026", the
+   __DATE__ form) and .time ("11:08:42"), as Unix seconds. The strings carry no
+   zone, so they are read as UTC; hours off do not matter for certificate
+   dates. -1 when either string does not parse. */
+static inline int64_t ota_build_epoch(const char *date, const char *hms)
+{
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char mon[4] = {0};
+    int d, y, h, mi, s;
+    if (sscanf(date, "%3s %d %d", mon, &d, &y) != 3) return -1;
+    if (sscanf(hms, "%d:%d:%d", &h, &mi, &s) != 3) return -1;
+    const char *at = strlen(mon) == 3 ? strstr(months, mon) : NULL;
+    if (!at || (at - months) % 3) return -1;
+    if (d < 1 || d > 31 || y < 1970 || h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 60)
+        return -1;
+    return ota_days_from_civil(y, (int)(at - months) / 3 + 1, d) * 86400 + h * 3600 + mi * 60 + s;
+}
+
+/* With no SNTP time, certificate dates are checked against the build time
+   instead of an unset clock: a clock earlier than the build is wrong for sure.
+   A later clock, set by an earlier sync, is kept. */
+static inline int64_t ota_clock_floor(int64_t now, int64_t build)
+{
+    return (build >= 0 && now < build) ? build : now;
+}

@@ -26,6 +26,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_lvgl_port.h"
+#include "display_runtime.h"
 #include "bsp_touch.h"
 #include "bsp_common.h"
 #include "esp_rom_sys.h"
@@ -215,7 +216,6 @@ lv_display_t *bsp_display_start(void) {
     ESP_LOGI(TAG, "RGB panel");
     esp_lcd_rgb_panel_config_t rgb_cfg = {
         .clk_src = LCD_CLK_SRC_PLL160M,
-        .psram_trans_align = 64,
         .data_width = 16, .bits_per_pixel = 16,
         .de_gpio_num = PIN_LCD_DE, .pclk_gpio_num = PIN_LCD_PCLK,
         .vsync_gpio_num = PIN_LCD_VSYNC, .hsync_gpio_num = PIN_LCD_HSYNC,
@@ -240,6 +240,7 @@ lv_display_t *bsp_display_start(void) {
     ESP_LOGI(TAG, "lvgl_port");
     const lvgl_port_cfg_t lp = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lp));
+    ESP_ERROR_CHECK(display_runtime_start());
     const lvgl_port_display_cfg_t dcfg = {
         .panel_handle = s_panel,
         .buffer_size = LCD_W * LCD_H, .double_buffer = true,

@@ -68,7 +68,7 @@ void notify_wifi_cancel(uint32_t session);
 
 extern ota_ui_t s_ota_st;
 extern int      s_ota_pct;
-extern char     s_ota_txt[32];
+extern char     s_ota_txt[48];
 extern char     s_fw_ver[24];
 extern char     s_fw_build[16];
 bool ota_check_available(void);
@@ -123,11 +123,14 @@ void settings_caps_changed(void);
 lv_obj_t *settings_hold_arc(void);
 void      settings_hold_arm(int set_row, uint32_t col);
 void      settings_set_link_text(const char *t);
+void      settings_eat_wifi_click(void);
 float     settings_row_angle(int set_row);
 
 void apply_brightness(void);
 void notify_edit(void);
 void notify_units(bool use_f);
+void units_set(bool units_c);
+bool sync_refuse(void);
 void begin_pairing(void);
 void zone_disp_name(int i, char *out, size_t n);
 
@@ -225,6 +228,7 @@ void home_batt_dismiss_24h(void);
 bool batt_snoozed(void);
 
 bool home_face_live(void);
+bool home_lock_gates(void);
 
 typedef enum { DLG_NONE, DLG_DISMISS_BATT, DLG_GOTO_HEATPUMP, DLG_GOTO_LINK,
                DLG_GOTO_LINK_ROW, DLG_PAIR, DLG_RESET } dlg_action_t;

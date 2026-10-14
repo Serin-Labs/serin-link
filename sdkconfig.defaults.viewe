@@ -14,10 +14,8 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # Trim for the kit enclosure (carrier PCB + printed stand); a different
 # enclosure, or a bare display module, needs its own. The `sensor-offset`
 # console command writes a per-device NVS override that wins over this.
-CONFIG_SERIN_SHT40_OFFSET_CC=153
-CONFIG_SERIN_SHT40_AIRFLOW_DELTA_CC=0
+CONFIG_SERIN_SHT40_OFFSET_CC=100
 CONFIG_SERIN_SHT40_IDLE_OFF_DELTA_CC=0
 
-# Follows OFFSET_CC: 1097 is Psat(T+1.53)/Psat(T) at ~22 C. Re-fit it
-# whenever OFFSET_CC changes. A per-device `sensor-offset` does not move it.
-CONFIG_SERIN_SHT40_RH_GAIN_PPT=1097
+# Humidity gain as a ratio. A per-device `sensor-offset` does not change it.
+CONFIG_SERIN_SHT40_RH_GAIN_PPT=1110

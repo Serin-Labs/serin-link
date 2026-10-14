@@ -27,6 +27,7 @@
 #include "prefs.h"
 #include "sensor_sht40.h"
 #include "thermal_cal.h"
+#include "link_ota.h"
 
 hvac_state_t s_state;
 screen_id_t  s_cur = SCREEN_THERMOSTAT;
@@ -44,7 +45,7 @@ static ui_screen_gate_t s_screen_gate = UI_SCREEN_GATE_NONE;
 static bool s_night      = false;
 static uint8_t s_night_ceil = 0;
 static bool s_night_en   = true;
-static bool s_anim_en    = false;
+static bool s_anim_en    = true;
 static bool s_night_lift = false;
 #if !CONFIG_SERIN_BOARD_VIEWE_21
 static void bright_exec_cb(void *var, int32_t v);
@@ -115,7 +116,7 @@ static void ui_state_defaults(hvac_state_t *s);
 
 ota_ui_t s_ota_st = OTA_UI_HIDDEN;
 int      s_ota_pct;
-char     s_ota_txt[32];
+char     s_ota_txt[48];
 char     s_fw_ver[24];
 char     s_fw_build[16];
 
@@ -298,6 +299,8 @@ void note_activity(void)
 #define LOCK_PILL_MS  1200
 static lv_timer_t *s_lock_pill_timer;
 static void refresh_thermostat(void);
+static dial_face_t thermo_face(void);
+static bool face_is_blank(dial_face_t f);
 
 static void lock_pill_hide_cb(lv_timer_t *t)
 {
@@ -310,7 +313,8 @@ static void lock_pill_hide_cb(lv_timer_t *t)
 void child_lock_pill_flash(void)
 {
     if (!T.lockPill) return;
-    lv_obj_add_flag(T.pill, LV_OBJ_FLAG_HIDDEN);
+    /* A blank offline face centres its label below the lock pill's slot. */
+    if (!face_is_blank(thermo_face())) lv_obj_add_flag(T.pill, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(T.lockPill);
     lv_obj_remove_flag(T.lockPill, LV_OBJ_FLAG_HIDDEN);
     if (s_lock_pill_timer) lv_timer_reset(s_lock_pill_timer);
@@ -677,8 +681,6 @@ static void alert_click_cb(lv_event_t *e);
 static void zchip_click_cb(lv_event_t *e);
 static void airbtn_click_cb(lv_event_t *e);
 static void airbtn_refresh(void);
-static dial_face_t thermo_face(void);
-static bool face_is_blank(dial_face_t f);
 static void pair_hint_paint(void);
 static void pair_retry(void);
 static void pair_dismiss(void);
@@ -844,6 +846,32 @@ static void edit_rails(int *lo, int *hi)
 
 static void thermo_ring(float setdd);
 
+/* The setpoints are display values. Carry them into the new unit before the
+ * controller echoes it, or the next step starts from an old-unit number and
+ * clamps to a rail. A flip straight back restores the exact old values.
+ * Band edges are not re-separated: edges closer than one step of the new
+ * unit can land on the same value (lo == hi). Not fixed here. */
+void units_set(bool units_c)
+{
+    static ui_dd_flip_t memo[3];
+    static int memo_zone;
+    if (units_c == s_units_c) return;
+    /* Another zone's flip must not restore into this zone. */
+    if (memo_zone != s_zactive) { memset(memo, 0, sizeof memo); memo_zone = s_zactive; }
+    bool was_f = !s_units_c;
+    s_units_c = units_c;
+    s_state.use_f = !units_c;
+    int *dd[] = { &s_state.set_dd, &s_state.set_lo_dd, &s_state.set_hi_dd };
+    for (size_t i = 0; i < sizeof dd / sizeof *dd; i++) {
+        if (*dd[i] <= 0) continue;
+        int v = ui_dd_flip(&memo[i], *dd[i], was_f, !units_c, s_caps.ftab_id);
+        if (v < dial_ddmin()) v = dial_ddmin();
+        if (v > dial_ddmax()) v = dial_ddmax();
+        *dd[i] = memo[i].after = v;
+    }
+    notify_units(!units_c);
+}
+
 static bool dial_gesture_tail(void)
 {
     return s_dial_gest && !uig_click_is_tap(s_dial_gest);
@@ -921,6 +949,18 @@ bool face_dismissed(dial_face_t f)
 }
 
 bool home_face_live(void) { return thermo_face() == DIAL_LIVE; }
+
+bool home_lock_gates(void)
+{
+    dial_face_t f = thermo_face();
+    child_lock_face_t lf = face_dismissed(f)    ? CHILD_LOCK_FACE_REMIND
+                         : f == DIAL_LINK_OFF  ? CHILD_LOCK_FACE_LINK_OFF
+                         : f == DIAL_CN105_OFF ? CHILD_LOCK_FACE_CN105_OFF
+                         : f == DIAL_WIFI_OFF  ? CHILD_LOCK_FACE_WIFI_OFF
+                         : f == DIAL_UNPAIRED  ? CHILD_LOCK_FACE_UNPAIRED
+                                               : CHILD_LOCK_FACE_LIVE;
+    return child_lock_gates(&s_child_lock, lf);
+}
 
 bool input_quiet(void)
 {
@@ -1025,8 +1065,7 @@ static bool swipe_gate_open(void)
 
 static bool lock_gates(void)
 {
-    return s_cur == SCREEN_THERMOSTAT && child_lock_engaged(&s_child_lock) &&
-           thermo_face() == DIAL_LIVE;
+    return s_cur == SCREEN_THERMOSTAT && home_lock_gates();
 }
 
 static bool lock_refuse(void)
@@ -1516,7 +1555,7 @@ static void refresh_blank_offline(dial_face_t face)
         lv_obj_remove_flag(T.wifiHint, LV_OBJ_FLAG_HIDDEN);
     }
 
-    if (!lock_pill_owns_slot()) lv_obj_remove_flag(T.pill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(T.pill, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_opa(T.pill, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(T.pill, 0, 0);
     lv_obj_set_style_text_font(T.status, FONT_DIAL_OFFLINE, 0);
@@ -1537,7 +1576,7 @@ static void refresh_pairing_face(void)
     lv_obj_remove_flag(T.pairBox,  LV_OBJ_FLAG_HIDDEN);
 
     bool searching = (s_pair_state == PAIR_UI_SEARCHING);
-    bool ok        = (s_pair_state == PAIR_UI_OK);
+    bool ok        = (s_pair_state == PAIR_UI_OK || s_pair_state == PAIR_UI_SAVED);
     bool fail      = (s_pair_state == PAIR_UI_FAIL);
     bool full      = (s_pair_state == PAIR_UI_FULL);
     bool mismatch  = (s_pair_state == PAIR_UI_MISMATCH);
@@ -1555,7 +1594,8 @@ static void refresh_pairing_face(void)
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(T.pairTitle, "Paired");
         lv_obj_add_flag(T.pairInstr, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(T.pairHint, "Restarting");
+        lv_label_set_text(T.pairHint, s_pair_state == PAIR_UI_SAVED
+                                    ? LINK_OTA_SOAK_MSG : "Restarting");
         lv_obj_remove_flag(T.pairHint, LV_OBJ_FLAG_HIDDEN);
     } else if (fail) {
         lv_obj_add_flag(T.pairIcon, LV_OBJ_FLAG_HIDDEN);
@@ -1875,6 +1915,12 @@ static void hold_link_complete(void)
     if (s_on_forget) s_on_forget();
 }
 
+static void wifi_change_complete(void)
+{
+    wifi_change_begin();
+    settings_eat_wifi_click();
+}
+
 static void wifi_skip_complete(void)
 {
     face_dismiss(DIAL_WIFI_OFF);
@@ -1914,7 +1960,7 @@ static void wifi_change_arm(uint32_t col) { settings_hold_arm(SET_WIFI, col); }
 static const hold_spec_t HOLD_SPECS[] = {
     [HOLD_LOCK_UNLOCK] = { lock_unlock_armed, lock_unlock_complete, thermo_hold_arc,   NULL,               NULL },
     [HOLD_LINK_FORGET] = { link_unpair_armed, hold_link_complete,   settings_hold_arc, link_forget_angle,  link_forget_arm },
-    [HOLD_WIFI_CHANGE] = { wifi_change_armed, wifi_change_begin,    settings_hold_arc, wifi_change_angle,  wifi_change_arm },
+    [HOLD_WIFI_CHANGE] = { wifi_change_armed, wifi_change_complete, settings_hold_arc, wifi_change_angle,  wifi_change_arm },
     [HOLD_WIFI_SKIP]   = { wifi_skip_armed,   wifi_skip_complete,   thermo_hold_arc,   NULL,               NULL },
     [HOLD_ADV_RESET]   = { adv_reset_armed,   adv_reset_complete,   advanced_hold_arc, advanced_row_angle, NULL },
 };
@@ -2068,6 +2114,15 @@ typedef struct {
      * should land, because the run that put it on screen is over. */
     bool transient;
 } screen_ops_t;
+
+/* Until the controller confirms the zone, a change would be dropped. Refuse
+ * it on the home face, where the Syncing chip says why. */
+bool sync_refuse(void)
+{
+    if (s_state.alert != ALERT_SYNCING) return false;
+    ui_show_screen(SCREEN_THERMOSTAT);
+    return true;
+}
 
 static void thermo_turn(int delta)
 {
@@ -2354,13 +2409,13 @@ static void pill_click_cb(lv_event_t *e)
 {
     (void)e;
     if (dial_gesture_tail()) return;
+    if (lock_refuse()) return;
     switch (thermo_face()) {
         case DIAL_UNPAIRED:  pair_face_press();                 break;
         case DIAL_WIFI_OFF:  wifi_setup_entry();                break;
         case DIAL_LINK_OFF:  offline_dialog_show(DIAL_LINK_OFF);  break;
         case DIAL_CN105_OFF: offline_dialog_show(DIAL_CN105_OFF); break;
         default:
-            if (lock_refuse()) break;
             if (s_state.alert == ALERT_SYNCING && !hvac_state_plausible(&s_state))
                 break;
             ui_show_screen(SCREEN_MODE);
@@ -2526,7 +2581,7 @@ void ui_init(void)
     s_wifi_dismissed[0] = prefs_get_bool("wifi_skip", false);
     s_idle_off = prefs_get_u8("idle_off", 0) != 0;
     s_night_en = prefs_get_u8("night_en", 1) != 0;
-    s_anim_en  = prefs_get_u8("anim_en", 0) != 0;
+    s_anim_en  = prefs_get_u8("anim_en", 1) != 0;
     sensor_sht40_set_idle_off(s_idle_off);
     child_lock_init(&s_child_lock, prefs_get_u8("lk_en", 0) != 0);
     for (int i = 0; i < SCREEN_COUNT; i++)

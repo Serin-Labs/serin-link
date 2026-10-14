@@ -21,6 +21,7 @@
 #include "esp_lcd_sh8601.h"
 #include "esp_lcd_touch_cst820.h"
 #include "esp_lvgl_port.h"
+#include "display_runtime.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "prefs.h"
@@ -56,8 +57,9 @@ static const char *TAG = "bsp_viewe";
 #define LCD_W         466
 #define LCD_H         466
 #define LCD_BPP        16
-#define LCD_BUF_ROWS   60
+#define LCD_BUF_ROWS   CONFIG_SERIN_LCD_BUFFER_ROWS
 #define LCD_STRIPE_SZ (LCD_W * LCD_BUF_ROWS * LCD_BPP / 8)
+_Static_assert(LCD_BUF_ROWS % 2 == 0, "QSPI draw-buffer rows must be even");
 
 #define TP_I2C_PORT   I2C_NUM_0
 #define PIN_TP_SDA      1
@@ -399,6 +401,7 @@ lv_display_t *bsp_display_start(void) {
     ESP_LOGI(TAG, "lvgl_port");
     const lvgl_port_cfg_t lp = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lp));
+    ESP_ERROR_CHECK(display_runtime_start());
     const lvgl_port_display_cfg_t dcfg = {
         .io_handle = s_io, .panel_handle = s_panel,
         .buffer_size = LCD_W * LCD_BUF_ROWS, .double_buffer = true,
@@ -415,6 +418,12 @@ lv_display_t *bsp_display_start(void) {
      * mutex is recursive, so the nested take inside add_disp is fine. */
     ESP_ERROR_CHECK(lvgl_port_lock(0) ? ESP_OK : ESP_ERR_TIMEOUT);
     lv_display_t *disp = lvgl_port_add_disp(&dcfg);
+    ESP_ERROR_CHECK(disp ? ESP_OK : ESP_ERR_NO_MEM);
+#if CONFIG_SERIN_LCD_BLOCKING_FLUSH
+    ESP_ERROR_CHECK(display_runtime_attach(disp, s_io, true));
+#else
+    ESP_ERROR_CHECK(display_runtime_attach(disp, s_io, false));
+#endif
     lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
     lv_obj_t *scr0 = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr0, lv_color_black(), 0);
@@ -526,6 +535,9 @@ void bsp_input_start(void (*on_encoder)(int), void (*on_button)(void),
         .default_direction = 1,
         .gpio_encoder_a = PIN_ENC_A,
         .gpio_encoder_b = PIN_ENC_B,
+#if CONFIG_SERIN_INPUT_POWER_SAVE
+        .enable_power_save = true,
+#endif
     };
     s_knob = iot_knob_create(&kcfg);
     if (s_knob) {
@@ -538,7 +550,12 @@ void bsp_input_start(void (*on_encoder)(int), void (*on_button)(void),
     button_config_t bcfg = {
         .type = BUTTON_TYPE_GPIO,
         .long_press_time = BTN_HOLD_MS,
-        .gpio_button_config = { .gpio_num = PIN_BTN, .active_level = 0 },
+        .gpio_button_config = {
+            .gpio_num = PIN_BTN, .active_level = 0,
+#if CONFIG_SERIN_INPUT_POWER_SAVE
+            .enable_power_save = true,
+#endif
+        },
     };
     button_handle_t btn = iot_button_create(&bcfg);
     if (btn) {

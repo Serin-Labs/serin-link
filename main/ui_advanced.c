@@ -44,8 +44,7 @@ static const char *const ADV_INFO[ADV_N] = {
 #define ADV_INFO_D        35   /* 34 px on the 466 panel */
 #define ADV_INFO_RING      2
 #define ADV_INFO_RING_OPA 41   /* white @ 16% */
-#define ADV_INFO_GAP       4   /* keep the info hit floor clear of the options */
-#define ADV_INFO_COL_PAD  27   /* >= the 26 px touch_floor grows the dot by */
+#define ADV_INFO_Y       149   /* full touch target clears the top ring node */
 
 _Static_assert(ADV_N <= RIM_MAX, "advanced rows exceed the rim widget");
 
@@ -53,7 +52,7 @@ static int s_adv_sel = ADV_UNITS;
 static bool s_adv_editing = false;
 
 static rim_t ADVR;
-static struct { lv_obj_t *panel, *name, *val, *meta, *hint, *holdArc,
+static struct { lv_obj_t *panel, *name, *action, *val, *reset, *meta, *hint, *holdArc,
                          *uRow, *uF, *uC,
                          *uFHit, *uCHit,
                          *lRow, *lOff, *lOn,
@@ -69,6 +68,7 @@ static struct { lv_obj_t *panel, *name, *val, *meta, *hint, *holdArc,
 static void adv_node_click_cb(lv_event_t *e);
 static void adv_info_click_cb(lv_event_t *e);
 static void adv_info_show(int row);
+static void adv_action_click_cb(lv_event_t *e);
 
 lv_obj_t *advanced_hold_arc(void) { return AV.holdArc; }
 
@@ -88,13 +88,42 @@ void advanced_land_heatpump(void)
     ui_show_screen(SCREEN_ADVANCED);
 }
 
-static void adv_toggle_pad(lv_obj_t *h)
+static void adv_place(lv_obj_t *obj, int y)
 {
-    lv_obj_set_style_pad_left(h, SERIN_PX(14), 0);
-    lv_obj_set_style_pad_right(h, SERIN_PX(14), 0);
-    lv_obj_set_style_pad_top(h, SERIN_PX(6), 0);
-    lv_obj_set_style_pad_bottom(h, SERIN_PX(6), 0);
-    lv_obj_set_style_radius(h, SERIN_PX(20), 0);
+    lv_obj_align(obj, LV_ALIGN_CENTER, 0, SERIN_PX(y) - SERIN_C);
+}
+
+static lv_obj_t *adv_hit(lv_obj_t *parent, int width)
+{
+    lv_obj_t *hit = lv_obj_create(parent);
+    lv_obj_remove_style_all(hit);
+    int height = SERIN_PX(SERIN_SLOT_CONTROL_H);
+    if (height < SERIN_TOUCH_MIN) height = SERIN_TOUCH_MIN;
+    lv_obj_set_size(hit, SERIN_PX(width), height);
+    lv_obj_remove_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    return hit;
+}
+
+static void adv_pill_press_cb(lv_event_t *e)
+{
+    lv_obj_t *pill = lv_event_get_user_data(e);
+    lv_obj_set_state(pill, LV_STATE_PRESSED, lv_event_get_code(e) == LV_EVENT_PRESSED);
+}
+
+static void adv_pill_feedback(lv_obj_t *hit, lv_obj_t *pill)
+{
+    press_ack(pill, ACK_OPA_UNITS);
+    lv_obj_add_event_cb(hit, adv_pill_press_cb, LV_EVENT_PRESSED, pill);
+    lv_obj_add_event_cb(hit, adv_pill_press_cb, LV_EVENT_RELEASED, pill);
+    lv_obj_add_event_cb(hit, adv_pill_press_cb, LV_EVENT_PRESS_LOST, pill);
+}
+
+static void adv_toggle_style(lv_obj_t *pill, bool selected, uint32_t color)
+{
+    lv_obj_set_style_bg_opa(pill, selected ? LV_OPA_COVER : OPA_FILL_NEUTRAL, 0);
+    lv_obj_set_style_bg_color(pill, lv_color_hex(selected ? color : COL_PURE), 0);
+    lv_obj_set_style_text_color(pill, lv_color_hex(selected ? COL_ON_LIGHT : COL_GREY), 0);
 }
 
 static void adv_opt_objects(lv_obj_t *row, lv_obj_t **first, lv_obj_t **second,
@@ -141,11 +170,7 @@ static void adv_opt_tap_cb(lv_event_t *e)
     bool second = lv_event_get_target(e) == b_hit;
     s_adv_editing = true;
     if (row == AV.uRow) {
-        bool nc = second;
-        if (nc != s_units_c) {
-            s_units_c = nc;
-            notify_units(!s_units_c);
-        }
+        units_set(second);
     } else if (row == AV.lRow) {
         lock_set(second);
     } else if (row == AV.iRow) {
@@ -162,38 +187,27 @@ static lv_obj_t *adv_opt_row(lv_obj_t *col, lv_obj_t **first, const char *ftxt,
                              lv_obj_t **first_hit, lv_obj_t **second, const char *stxt,
                              lv_obj_t **second_hit)
 {
-    static const touch_floor_arg_t k_advopt_tf = { 0, "AV.option" };
-    lv_obj_t *row = mkrow(col, 0);
-    *first_hit = lv_obj_create(row);
-    *second_hit = lv_obj_create(row);
-    for (lv_obj_t *hit = *first_hit; hit; hit = hit == *first_hit ? *second_hit : NULL) {
-        lv_obj_remove_style_all(hit);
-        lv_obj_set_size(hit, SERIN_TOUCH_MIN, SERIN_TOUCH_MIN);
-        lv_obj_remove_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
-    }
+    lv_obj_t *row = mkrow(col, SERIN_PX(6));
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    *first_hit = adv_hit(row, 112);
+    *second_hit = adv_hit(row, 112);
 
     *first  = mklabel(*first_hit, FONT_UNITS, COL_WHITE, ftxt);
     *second = mklabel(*second_hit, FONT_UNITS, COL_GREY,  stxt);
-    adv_toggle_pad(*first);
-    adv_toggle_pad(*second);
-    lv_obj_align(*first, LV_ALIGN_RIGHT_MID, -SERIN_PX(3), 0);
-    lv_obj_align(*second, LV_ALIGN_LEFT_MID, SERIN_PX(3), 0);
-
-    /* A minimum-size slot can be narrower than a padded word such as
-     * "Glance". Lay out the compact visual pill first, then reserve enough
-     * real parent width for it before the row is measured or made touchable. */
-    lv_obj_update_layout(row);
-    lv_coord_t fw = lv_obj_get_width(*first) + SERIN_PX(3);
-    lv_coord_t sw = lv_obj_get_width(*second) + SERIN_PX(3);
-    lv_obj_set_width(*first_hit, fw > SERIN_TOUCH_MIN ? fw : SERIN_TOUCH_MIN);
-    lv_obj_set_width(*second_hit, sw > SERIN_TOUCH_MIN ? sw : SERIN_TOUCH_MIN);
-    lv_obj_update_layout(row);
+    for (lv_obj_t *pill = *first; pill; pill = pill == *first ? *second : NULL) {
+        lv_obj_set_size(pill, lv_pct(100),
+                        lv_font_get_line_height(FONT_UNITS) + 2 * SERIN_PX(11));
+        lv_obj_set_style_pad_hor(pill, SERIN_PX(4), 0);
+        lv_obj_set_style_pad_ver(pill, SERIN_PX(11), 0);
+        lv_obj_set_style_radius(pill, SERIN_PX(33), 0);
+        lv_obj_set_style_text_align(pill, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(pill);
+    }
+    adv_place(row, SERIN_SLOT_CONTROL_Y);
 
     press_ack(*first,  ACK_OPA_UNITS);
     press_ack(*second, ACK_OPA_UNITS);
     for (lv_obj_t *hit = *first_hit; hit; hit = hit == *first_hit ? *second_hit : NULL) {
-        touch_floor(hit, &k_advopt_tf);
         lv_obj_add_event_cb(hit, adv_opt_tap_cb, LV_EVENT_CLICKED, row);
         lv_obj_add_event_cb(hit, adv_opt_press_cb, LV_EVENT_PRESSED,    row);
         lv_obj_add_event_cb(hit, adv_opt_press_cb, LV_EVENT_PRESSING,   row);
@@ -207,27 +221,30 @@ static lv_obj_t *adv_opt_row(lv_obj_t *col, lv_obj_t **first, const char *ftxt,
  * row's own accent-coloured toggle. */
 static lv_obj_t *adv_info_btn(lv_obj_t *col)
 {
-    static const touch_floor_arg_t k_advinfo_tf = { 0, "AV.info" };
+    lv_obj_t *hit = lv_obj_create(col);
+    lv_obj_remove_style_all(hit);
+    lv_obj_set_size(hit, SERIN_TOUCH_MIN, SERIN_TOUCH_MIN);
+    lv_obj_remove_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    adv_place(hit, ADV_INFO_Y);
 
-    lv_obj_t *b = lv_obj_create(col);
+    lv_obj_t *b = lv_obj_create(hit);
     lv_obj_remove_style_all(b);
     lv_obj_set_size(b, SERIN_PX(ADV_INFO_D), SERIN_PX(ADV_INFO_D));
-    lv_obj_set_style_margin_top(b, SERIN_PX(ADV_INFO_GAP), 0);
     lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(b, SERIN_PX(ADV_INFO_RING), 0);
     lv_obj_set_style_border_color(b, lv_color_white(), 0);
     lv_obj_set_style_border_opa(b, ADV_INFO_RING_OPA, 0);
-    lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(b);
 
     lv_obj_t *l = mklabel(b, FONT_STATUS, COL_TEXT_SOFT, "i");
     lv_obj_set_style_text_opa(l, LV_OPA_50, 0);
     lv_obj_center(l);
 
-    press_ack(b, ACK_OPA_UNITS);
-    lv_obj_add_event_cb(b, adv_info_click_cb, LV_EVENT_CLICKED, NULL);
-    touch_floor(b, &k_advinfo_tf);
-    return b;
+    adv_pill_feedback(hit, b);
+    lv_obj_add_event_cb(hit, adv_info_click_cb, LV_EVENT_CLICKED, NULL);
+    return hit;
 }
 
 void build_advanced(void)
@@ -247,13 +264,39 @@ void build_advanced(void)
     };
     rim_build(&ADVR, p, &cfg);
 
-    /* The option slots already reserve the touch floor around each pill. */
-    lv_obj_t *c = mkcol(p, SERIN_PX(300), 4, SERIN_PX(ADV_INFO_COL_PAD));
-    lv_obj_align(c, LV_ALIGN_TOP_MID, 0, SERIN_PX(176));
+    lv_obj_t *c = lv_obj_create(p);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, lv_pct(100), lv_pct(100));
+    lv_obj_remove_flag(c, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     AV.name = mklabel(c, FONT_SET_NAME, COL_ADV_UNITS, "Units");
-    AV.val  = mklabel(c, FONT_DIAL_PILL, COL_WHITE, "");
+    adv_place(AV.name, SERIN_SLOT_TITLE_Y);
+
+    AV.action = adv_hit(c, SERIN_SLOT_CONTROL_W);
+    adv_place(AV.action, SERIN_SLOT_CONTROL_Y);
+    lv_obj_t *pill = mkrow(AV.action, 0);
+    lv_obj_set_height(pill, lv_font_get_line_height(FONT_DIAL_PILL) + 2 * SERIN_PX(11));
+    lv_obj_set_style_max_width(pill, SERIN_PX(SERIN_SLOT_CONTROL_W), 0);
+    lv_obj_set_style_pad_hor(pill, SERIN_PX(16), 0);
+    lv_obj_set_style_radius(pill, SERIN_PX(33), 0);
+    lv_obj_set_style_bg_color(pill, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(pill, OPA_FILL_NEUTRAL, 0);
+    lv_obj_remove_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(pill);
+    AV.val = mklabel(pill, FONT_DIAL_PILL, COL_WHITE, "");
+    lv_obj_set_style_max_width(AV.val, SERIN_PX(SERIN_SLOT_CONTROL_W - 32), 0);
+    lv_obj_set_height(AV.val, lv_font_get_line_height(FONT_DIAL_PILL));
+    lv_label_set_long_mode(AV.val, LV_LABEL_LONG_SCROLL);
+    adv_pill_feedback(AV.action, pill);
+    lv_obj_add_event_cb(AV.action, adv_action_click_cb, LV_EVENT_CLICKED, NULL);
+
+    AV.reset = mklabel(c, FONT_DIAL_PILL, COL_WHITE, "Hold the knob");
+    adv_place(AV.reset, SERIN_SLOT_CONTROL_Y);
     AV.meta = mklabel(c, FONT_STATUS, COL_DIM, "");
+    lv_obj_set_size(AV.meta, SERIN_PX(260), lv_font_get_line_height(FONT_STATUS));
+    lv_label_set_long_mode(AV.meta, LV_LABEL_LONG_SCROLL);
+    lv_obj_set_style_text_align(AV.meta, LV_TEXT_ALIGN_CENTER, 0);
+    adv_place(AV.meta, SERIN_SLOT_DETAIL_Y);
     lv_obj_add_flag(AV.meta, LV_OBJ_FLAG_HIDDEN);
 
     AV.uRow = adv_opt_row(c, &AV.uF, "\xC2\xB0" "F", &AV.uFHit,
@@ -273,7 +316,9 @@ void build_advanced(void)
     lv_obj_add_flag(AV.tRow, LV_OBJ_FLAG_HIDDEN);
 
     AV.hint = mklabel(c, FONT_HINT, COL_GREY, "");
+    lv_obj_set_width(AV.hint, SERIN_PX(280));
     lv_obj_set_style_text_align(AV.hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(AV.hint, LV_ALIGN_TOP_MID, 0, SERIN_PX(SERIN_SLOT_HINT_TOP));
 
     AV.info = adv_info_btn(c);
     lv_obj_add_flag(AV.info, LV_OBJ_FLAG_HIDDEN);
@@ -304,7 +349,8 @@ void refresh_advanced(void)
     lv_obj_add_flag(AV.iRow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(AV.nRow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(AV.tRow, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(AV.action, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(AV.reset, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_color(AV.val, lv_color_hex(COL_WHITE), 0);
     lv_obj_add_flag(AV.meta, LV_OBJ_FLAG_HIDDEN);
 
@@ -313,67 +359,45 @@ void refresh_advanced(void)
 
     switch (s_adv_sel) {
     case ADV_UNITS: {
-        lv_obj_add_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(AV.uRow, LV_OBJ_FLAG_HIDDEN);
         bool cc = s_units_c;
-        lv_obj_set_style_bg_opa(AV.uF, cc ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(AV.uF, lv_color_hex(COL_ADV_UNITS), 0);
-        lv_obj_set_style_text_color(AV.uF, lv_color_hex(cc ? COL_GREY : COL_ON_LIGHT), 0);
-        lv_obj_set_style_bg_opa(AV.uC, cc ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(AV.uC, lv_color_hex(COL_ADV_UNITS), 0);
-        lv_obj_set_style_text_color(AV.uC, lv_color_hex(cc ? COL_ON_LIGHT : COL_GREY), 0);
+        adv_toggle_style(AV.uF, !cc, COL_ADV_UNITS);
+        adv_toggle_style(AV.uC, cc, COL_ADV_UNITS);
         break;
     }
     case ADV_IDLE: {
-        lv_obj_add_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(AV.iRow, LV_OBJ_FLAG_HIDDEN);
         bool off = ui_idle_off_get();
-        lv_obj_set_style_bg_opa(AV.iG, off ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(AV.iG, lv_color_hex(COL_ADV_IDLE), 0);
-        lv_obj_set_style_text_color(AV.iG, lv_color_hex(off ? COL_GREY : COL_ON_LIGHT), 0);
-        lv_obj_set_style_bg_opa(AV.iO, off ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(AV.iO, lv_color_hex(COL_ADV_IDLE), 0);
-        lv_obj_set_style_text_color(AV.iO, lv_color_hex(off ? COL_ON_LIGHT : COL_GREY), 0);
+        adv_toggle_style(AV.iG, !off, COL_ADV_IDLE);
+        adv_toggle_style(AV.iO, off, COL_ADV_IDLE);
         break;
     }
     case ADV_NIGHT: {
-        lv_obj_add_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(AV.nRow, LV_OBJ_FLAG_HIDDEN);
         bool on = ui_night_en_get();
-        lv_obj_set_style_bg_opa(AV.nOff, on ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(AV.nOff, lv_color_hex(COL_ADV_NIGHT), 0);
-        lv_obj_set_style_text_color(AV.nOff, lv_color_hex(on ? COL_GREY : COL_ON_LIGHT), 0);
-        lv_obj_set_style_bg_opa(AV.nOn, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(AV.nOn, lv_color_hex(COL_ADV_NIGHT), 0);
-        lv_obj_set_style_text_color(AV.nOn, lv_color_hex(on ? COL_ON_LIGHT : COL_GREY), 0);
+        adv_toggle_style(AV.nOff, !on, COL_ADV_NIGHT);
+        adv_toggle_style(AV.nOn, on, COL_ADV_NIGHT);
         break;
     }
     case ADV_TRANSITIONS: {
-        lv_obj_add_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(AV.tRow, LV_OBJ_FLAG_HIDDEN);
         bool on = ui_anim_en_get();
-        lv_obj_set_style_bg_opa(AV.tOff, on ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(AV.tOff, lv_color_hex(COL_ADV_TRANSITIONS), 0);
-        lv_obj_set_style_text_color(AV.tOff, lv_color_hex(on ? COL_GREY : COL_ON_LIGHT), 0);
-        lv_obj_set_style_bg_opa(AV.tOn, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(AV.tOn, lv_color_hex(COL_ADV_TRANSITIONS), 0);
-        lv_obj_set_style_text_color(AV.tOn, lv_color_hex(on ? COL_ON_LIGHT : COL_GREY), 0);
+        adv_toggle_style(AV.tOff, !on, COL_ADV_TRANSITIONS);
+        adv_toggle_style(AV.tOn, on, COL_ADV_TRANSITIONS);
         break;
     }
     case ADV_LOCK: {
-        lv_obj_add_flag(AV.val, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(AV.lRow, LV_OBJ_FLAG_HIDDEN);
         bool on = s_child_lock.enabled;
-        lv_obj_set_style_bg_opa(AV.lOff, on ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(AV.lOff, lv_color_hex(COL_ADV_LOCK), 0);
-        lv_obj_set_style_text_color(AV.lOff, lv_color_hex(on ? COL_GREY : COL_ON_LIGHT), 0);
-        lv_obj_set_style_bg_opa(AV.lOn, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_bg_color(AV.lOn, lv_color_hex(COL_ADV_LOCK), 0);
-        lv_obj_set_style_text_color(AV.lOn, lv_color_hex(on ? COL_ON_LIGHT : COL_GREY), 0);
+        adv_toggle_style(AV.lOff, !on, COL_ADV_LOCK);
+        adv_toggle_style(AV.lOn, on, COL_ADV_LOCK);
         break;
     }
     case ADV_HEATPUMP: {
         const hvac_state_t *s = &s_state;
+        lv_obj_remove_flag(AV.action, LV_OBJ_FLAG_HIDDEN);
+        if (zones_can_enter()) lv_obj_add_flag(AV.action, LV_OBJ_FLAG_CLICKABLE);
+        else                   lv_obj_remove_flag(AV.action, LV_OBJ_FLAG_CLICKABLE);
         if (!s->cn105_connected) {
             lv_label_set_text(AV.val, "Not connected");
             lv_obj_set_style_text_color(AV.val, lv_color_hex(COL_ALERT_NOLINK), 0);
@@ -409,16 +433,24 @@ void refresh_advanced(void)
         }
         break;
     }
-    default:        lv_label_set_text(AV.val, ""); break;
+    case ADV_RESET:
+        lv_obj_remove_flag(AV.reset, LV_OBJ_FLAG_HIDDEN);
+        break;
+    case ADV_BACK:
+        lv_obj_remove_flag(AV.action, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(AV.action, LV_OBJ_FLAG_CLICKABLE);
+        lv_label_set_text(AV.val, "Return");
+        break;
+    default: break;
     }
 
     const char *hint = "";
     if (s_adv_sel == ADV_RESET)
-        hint = H_HOLD("reset");
+        hint = "Then confirm reset";
     else if (s_adv_sel == ADV_LOCK && s_child_lock.enabled && !s_adv_editing)
         hint = H_HOLD("unlock") " on the home screen";
     else if (s_adv_sel == ADV_HEATPUMP)
-        hint = zones_can_enter() ? H_PRESS("choose") : "";
+        hint = zones_can_enter() ? H_PRESS("choose zone") : "";
     else if (s_adv_editing)
         hint = H_PRESS("return");
     lv_label_set_text(AV.hint, hint);
@@ -429,13 +461,7 @@ void refresh_advanced(void)
 void advanced_turn(int delta)
 {
     if (s_adv_editing && s_adv_sel == ADV_UNITS) {
-        if (delta) {
-            bool nc = (delta > 0);
-            if (nc != s_units_c) {
-                s_units_c = nc;
-                notify_units(!s_units_c);
-            }
-        }
+        if (delta) units_set(delta > 0);
     } else if (s_adv_editing && s_adv_sel == ADV_LOCK) {
         if (delta) lock_set(delta > 0);
     } else if (s_adv_editing && s_adv_sel == ADV_IDLE) {
@@ -466,6 +492,12 @@ void advanced_press(void)
     default: break;
     }
     refresh_advanced();
+}
+
+static void adv_action_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    advanced_press();
 }
 
 /* Explains the row; deliberately touches neither the selection nor the toggle. */

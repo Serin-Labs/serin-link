@@ -227,6 +227,62 @@ lv_obj_t *mkpill(lv_obj_t *parent, const char *text, uint32_t txt_col,
     return b;
 }
 
+static void slot_place(lv_obj_t *obj, int design_y)
+{
+    lv_obj_align(obj, LV_ALIGN_CENTER, 0, SERIN_PX(design_y) - SERIN_C);
+}
+
+lv_obj_t *mkslot_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color,
+                      const char *text, int width, int design_y)
+{
+    lv_obj_t *label = mklabel(parent, font, color, text);
+    lv_obj_set_size(label, SERIN_PX(width), lv_font_get_line_height(font));
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL);
+    slot_place(label, design_y);
+    return label;
+}
+
+static void slot_action_press_cb(lv_event_t *e)
+{
+    lv_obj_t *pill = lv_event_get_user_data(e);
+    lv_obj_set_state(pill, LV_STATE_PRESSED, lv_event_get_code(e) == LV_EVENT_PRESSED);
+}
+
+lv_obj_t *mkslot_action(lv_obj_t *parent, const char *text, lv_event_cb_t on_click,
+                       lv_obj_t **out_label)
+{
+    lv_obj_t *hit = lv_obj_create(parent);
+    lv_obj_remove_style_all(hit);
+    int height = SERIN_PX(SERIN_SLOT_CONTROL_H);
+    if (height < SERIN_TOUCH_MIN) height = SERIN_TOUCH_MIN;
+    lv_obj_set_size(hit, SERIN_PX(SERIN_SLOT_ACTION_W), height);
+    lv_obj_remove_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(hit, LV_OBJ_FLAG_CLICKABLE);
+    slot_place(hit, SERIN_SLOT_CONTROL_Y);
+
+    lv_obj_t *pill = mkrow(hit, 0);
+    lv_obj_set_height(pill, lv_font_get_line_height(FONT_DIAL_PILL) + 2 * SERIN_PX(11));
+    lv_obj_set_style_max_width(pill, SERIN_PX(SERIN_SLOT_ACTION_W), 0);
+    lv_obj_set_style_pad_hor(pill, SERIN_PX(16), 0);
+    lv_obj_set_style_radius(pill, SERIN_PX(33), 0);
+    lv_obj_set_style_bg_color(pill, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(pill, (lv_opa_t)26, 0);
+    lv_obj_remove_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(pill);
+    lv_obj_t *label = mklabel(pill, FONT_DIAL_PILL, COL_WHITE, text);
+    lv_obj_set_style_max_width(label, SERIN_PX(SERIN_SLOT_ACTION_W - 32), 0);
+    lv_obj_set_height(label, lv_font_get_line_height(FONT_DIAL_PILL));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL);
+    if (out_label) *out_label = label;
+    press_ack(pill, ACK_OPA_CHIP);
+    lv_obj_add_event_cb(hit, slot_action_press_cb, LV_EVENT_PRESSED, pill);
+    lv_obj_add_event_cb(hit, slot_action_press_cb, LV_EVENT_RELEASED, pill);
+    lv_obj_add_event_cb(hit, slot_action_press_cb, LV_EVENT_PRESS_LOST, pill);
+    lv_obj_add_event_cb(hit, on_click, LV_EVENT_CLICKED, NULL);
+    return hit;
+}
+
 #include <stdarg.h>
 #include <stdio.h>
 

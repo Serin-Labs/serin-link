@@ -1,0 +1,3 @@
+#pragma once
+#define CONFIG_SERIN_PERF_STATS 0
+#define CONFIG_SERIN_LVGL_MONOTONIC_TICK 1

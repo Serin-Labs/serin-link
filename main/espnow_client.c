@@ -3,6 +3,7 @@
  */
 #include "espnow_client.h"
 #include <stddef.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 #include <esp_now.h>
@@ -29,6 +30,7 @@
 #include "esp_lvgl_port.h"
 #include "esp_log.h"
 #include "ui.h"
+#include "link_ota.h"
 #include "sl2_proto.h"
 #include "sl2_pair_auth.h"
 #include "sl2_ui_map.h"
@@ -66,6 +68,8 @@ typedef struct {
     volatile uint32_t lastRxMs;
     volatile uint32_t lastStateRxMs; /* Actual receipt; never advanced for hold grace. */
     volatile uint8_t  lastStateCh;
+    volatile uint32_t lastCapsRxMs;
+    volatile uint8_t  lastCapsCh;
     volatile uint32_t pendAckMs;
     volatile uint8_t  pendAckCh;
     volatile uint32_t lastAckMs;
@@ -74,6 +78,7 @@ typedef struct {
     volatile int      rssi;
     volatile uint8_t  peerVer;
     uint32_t lastProbeMs;
+    uint32_t lastHopProbeMs;
     uint32_t firstProbeMs;
     volatile uint8_t chMiss;
     uint8_t  scanIdx;
@@ -90,7 +95,6 @@ typedef struct {
     uint8_t  gate;
     uint8_t  nightCeil;
     bool     night;
-    bool     air;
     bool     scrTxValid;
     bool     scrTxOn;
     volatile uint8_t  caps_seq;
@@ -134,8 +138,6 @@ _Static_assert(ESPNOW_MAX_BONDS <= CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM,
 
 #define BG_PROBE_MS      4000
 #define ZONES_OPEN_PROBE_MS 1000
-#define XCH_PROBE_MS     30000
-#define ZONE_HOP_DWELL_MS     120
 #define ZONE_HOP_INTERVAL_MS  250
 
 static int zone_by_mac(const uint8_t mac[6]) {
@@ -272,6 +274,15 @@ static void badge_paint_if_changed(uint32_t *sig) {
 }
 
 static hvac_state_t s_last_sent;
+/* What the controller itself reports for the held fields. STATE handling
+ * masks incoming values through the holds, so s_last_sent and the zone copy
+ * carry an in-flight overshoot; these do not. */
+static int s_ctrl_set_dd, s_ctrl_lo_dd, s_ctrl_hi_dd, s_ctrl_fan;
+static void ctrl_from(const hvac_state_t *st) {
+    s_ctrl_set_dd = st->set_dd;
+    s_ctrl_lo_dd = st->set_lo_dd; s_ctrl_hi_dd = st->set_hi_dd;
+    s_ctrl_fan = st->fan_pct;
+}
 
 static edit_hold_t  s_set_hold;
 static bool     s_set_hold_use_f = false;
@@ -335,6 +346,22 @@ static struct sl2_wifi_resp_pkt s_wifi_resp;
 
 static void alert_set(hvac_alert_t a) {
     hvac_state_t s; ui_get_state(&s); s.alert = a; ui_set_state(&s);
+}
+
+/* Owned by link_task, including apply_state() and zone switching. */
+static espnow_offline_alert_t s_offline_alert;
+/* A brief hold can begin and end between link_task iterations. */
+static atomic_bool s_offline_alert_reset_due;
+
+static void offline_alert_poll(void) {
+    if (atomic_exchange(&s_offline_alert_reset_due, false))
+        espnow_offline_alert_reset(&s_offline_alert);
+    espnow_offline_alert_note_reply(&s_offline_alert, s_z[s_active].lastStateRxMs);
+    if (!espnow_offline_alert_due(&s_offline_alert, now_ms())) return;
+    if (!lvgl_port_lock(0)) return;
+    alert_set(ALERT_NOLINK);
+    s_offline_alert.shown = true;
+    lvgl_port_unlock();
 }
 
 #define TX_ACK_MS 100
@@ -493,10 +520,6 @@ static void night_sync(void) {
     lvgl_port_unlock();
 }
 
-static void airflow_sync(void) {
-    sensor_sht40_set_airflow(s_zn > 0 && zone_online(0) && s_z[0].air);
-}
-
 static void apply_state(int zi, const struct sl2_state_pkt *p) {
     zone_t *z = &s_z[zi];
     if (zi == s_active) sweep_backoff_reset();
@@ -513,8 +536,6 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     z->gate = (uint8_t)sl2_screen_gate_from_flags2(p->flags2);
     z->night = sl2_night_from_flags2(p->flags2);
     z->nightCeil = (p->flags2 & SL2_SF2_NIGHT_CTL) ? p->night_ceil : 0;
-    z->air = action_moves_air(p->action);
-    airflow_sync();
     vane_range_check(zi, p);
     if (!lvgl_port_lock(0)) return;
     bool is_active = (zi == s_active);
@@ -531,22 +552,27 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     s.room_temp  = sl2_dc_to_display(p->room_dc, use_f, z->caps.ftab_id);
     if (p->set_dc != SL2_DC_NA) {
         int set_echo = ui_dd_from_dc(p->set_dc, use_f, z->caps.ftab_id);
-        if (is_active)
+        if (is_active) {
+            s_ctrl_set_dd = set_echo;
             set_echo = edit_hold_echo(&s_set_hold, set_echo, now, SET_HOLD_MS);
+        }
         s.set_dd = set_echo;
     }
     s.band_valid = (p->set_low_dc != SL2_DC_NA && p->set_high_dc != SL2_DC_NA);
     if (s.band_valid) {
         int lo = ui_dd_from_dc(p->set_low_dc,  use_f, z->caps.ftab_id);
         int hi = ui_dd_from_dc(p->set_high_dc, use_f, z->caps.ftab_id);
-        if (is_active)
+        if (is_active) {
+            s_ctrl_lo_dd = lo; s_ctrl_hi_dd = hi;
             edit_hold2_echo(&s_band_hold, &lo, &hi, now, SET_HOLD_MS);
+        }
         s.set_lo_dd = lo; s.set_hi_dd = hi;
     }
     s.fan_pct    = p->fan > 100 ? 100 : p->fan;
     s.vvane      = vvane_from_sl2(p->vane_v);
     s.hvane      = hvane_from_sl2(p->vane_h, z->caps.vane_h);
     if (is_active) {
+        s_ctrl_fan = s.fan_pct;
         s.fan_pct = edit_hold_echo(&s_fan_hold, s.fan_pct, now, SET_HOLD_MS);
         s.vvane   = (vvane_t)edit_hold_echo(&s_vv_hold, (int)s.vvane, now, SET_HOLD_MS);
         s.hvane   = (hvane_t)edit_hold_echo(&s_hv_hold, (int)s.hvane, now, SET_HOLD_MS);
@@ -565,6 +591,7 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     s.sub_mode = action_substate_str(p->action);
     z->st = s; z->synced = true;
     if (is_active) {
+        espnow_offline_alert_reset(&s_offline_alert);
         s_use_f = use_f;
         ui_set_state(&s);
         s_last_sent = s;
@@ -622,7 +649,7 @@ static void apply_caps(int zi, const struct sl2_caps_pkt *p) {
         memcpy(z->bond.name, name, sizeof z->bond.name);
         z->bond.name[sizeof z->bond.name - 1] = '\0';
         z->bond.caps_seq = p->caps_seq;
-        espnow_bond_set_name(zi, z->bond.name, z->bond.caps_seq);
+        espnow_bond_set_name(z->bond.mac, z->bond.name, z->bond.caps_seq);
     }
     if (zi == s_active && lvgl_port_lock(0)) {
         ui_set_caps(&z->caps);
@@ -890,6 +917,9 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     if (espnow_state_reply(data, len)) {
         z->lastStateCh = s_radio_ch;
         z->lastStateRxMs = received;
+    } else if (data[0] == SL2_PKT_CAPS) {
+        z->lastCapsCh = s_radio_ch;
+        z->lastCapsRxMs = received;
     }
 }
 
@@ -1056,15 +1086,17 @@ static void resend_held_edits(int zi) {
     const uint8_t ftab = s_z[zi].caps.ftab_id;
     if (s_mode_hold.on) { c.mask |= SL2_CM_MODE;
                          c.mode = mode_to_sl2((hvac_mode_t)s_mode_hold.val); }
-    if (s_fan_hold.on)  { c.mask |= SL2_CM_FAN;   c.fan = (uint8_t)s_fan_hold.val; }
+    if (s_fan_hold.on)  { c.mask |= SL2_CM_FAN;   c.fan = (uint8_t)s_fan_hold.val;
+                         s_tx_sent_fan = s_fan_hold.val; }
     if (s_vv_hold.on)   { c.mask |= SL2_CM_VANEV;
                          c.vane_v = vvane_to_sl2((vvane_t)s_vv_hold.val); }
     if (s_hv_hold.on)   { c.mask |= SL2_CM_VANEH;
                          c.vane_h = hvane_to_sl2((hvane_t)s_hv_hold.val,
                                                  s_z[zi].caps.vane_h); }
     if (s_unit_hold.on) { c.mask |= SL2_CM_UNITS; c.use_f = s_unit_hold.val ? 1 : 0; }
-    if (s_set_hold.on)  cmd_put_temp(&c, ftab);
-    if (s_band_hold.on) cmd_put_band(&c, ftab);
+    if (s_set_hold.on)  { cmd_put_temp(&c, ftab); s_tx_sent_temp = s_set_hold.val; }
+    if (s_band_hold.on) { cmd_put_band(&c, ftab);
+                         s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi; }
     lvgl_port_unlock();
     if (!c.mask) return;
     ESP_LOGW(TAG, "zone %d replay epoch moved (unit rebooted) — re-asserting "
@@ -1086,6 +1118,7 @@ static void do_zone_switch(int ni) {
     s_tx_sent_temp = -1000; s_tx_sent_lo = s_tx_sent_hi = -1000; s_tx_sent_fan = -1000;
     int oi = s_active;
     s_active = ni;
+    espnow_offline_alert_reset(&s_offline_alert);
     prefs_set_u8("activeZone", (uint8_t)ni);
     catalog_reset();
     if (lvgl_port_lock(0)) {
@@ -1103,7 +1136,7 @@ static void do_zone_switch(int ni) {
         if (lvgl_port_lock(0)) {
             ui_set_caps(&z->caps);
             ui_set_state(&z->st);
-            s_last_sent = z->st; s_use_f = z->st.use_f;
+            s_last_sent = z->st; ctrl_from(&z->st); s_use_f = z->st.use_f;
             ui_set_link_state(true, true, z->bond.mac, z->rssi);
             push_zones_ui_locked();
             lvgl_port_unlock();
@@ -1117,7 +1150,7 @@ static void do_zone_switch(int ni) {
         if (hvac_state_plausible(&z->st)) {
             hvac_state_t st = z->st; st.alert = ALERT_SYNCING;
             ui_set_state(&st);
-            s_last_sent = z->st; s_use_f = z->st.use_f;
+            s_last_sent = z->st; ctrl_from(&z->st); s_use_f = z->st.use_f;
         } else {
             hvac_state_t st;
             memset(&st, 0, sizeof st);
@@ -1237,6 +1270,7 @@ static void link_task(void *arg) {
         if (s_pairing || s_ota_hold) {
             if (!wasHeld) {
                 wasHeld = true;
+                espnow_offline_alert_reset(&s_offline_alert);
                 heldOnline = 0;
                 for (int i = 0; i < s_zn; i++)
                     if (zone_acked(i)) heldOnline |= 1u << i;
@@ -1285,6 +1319,7 @@ static void link_task(void *arg) {
             }
         }
         uint32_t now = now_ms();
+        offline_alert_poll();
 
         if (sweep_pass_due(now)) {
             badge_paint_if_changed(&badgeSig);
@@ -1294,7 +1329,7 @@ static void link_task(void *arg) {
                 s_sync_start_ms = now_ms();
                 lastProbe = now_ms();
             } else if (r == SWEEP_ROUND_END) {
-                if (lvgl_port_lock(0)) { alert_set(ALERT_NOLINK); lvgl_port_unlock(); }
+                espnow_offline_alert_start(&s_offline_alert, now_ms());
             }
             uint32_t spent = now_ms() - shot;
             if (spent < SWEEP_STEP_GAP_MS)
@@ -1310,16 +1345,15 @@ static void link_task(void *arg) {
         }
         for (int i = 0; i < s_zn; i++) {
             uint8_t ach = s_z[i].lastAckCh;
-            /* Background hop-polls do not hold the receiver awake for a
-             * reply, so only the active zone waits for one. */
-            bool replied = i != s_active ||
-                           espnow_reply_since(now - ESPNOW_RX_STALE_MS, s_z[i].lastStateRxMs,
+            /* Every channel visit holds RX awake for STATE. ACKs alone can
+             * come from a neighbouring channel and must not move the bond. */
+            bool replied = espnow_reply_since(now - ESPNOW_RX_STALE_MS, s_z[i].lastStateRxMs,
                                               s_z[i].lastStateCh, ach);
             if (espnow_heal_due(zone_acked(i), ach, s_z[i].bond.last_channel, replied)) {
                 ESP_LOGI(TAG, "zone %d channel heal %u -> %u", i,
                          s_z[i].bond.last_channel, ach);
                 s_z[i].bond.last_channel = ach;
-                espnow_bond_set_channel(i, ach);
+                espnow_bond_set_channel(s_z[i].bond.mac, ach);
             }
         }
 
@@ -1337,7 +1371,6 @@ static void link_task(void *arg) {
             push_zones_ui();
             screen_gate_sync();
             night_sync();
-            airflow_sync();
 
             int16_t scc = 0; uint16_t srh_cc = SL2_HUM_CC_NA;
             const bool svalid = sensor_sht40_read(&scc, &srh_cc, NULL);
@@ -1366,8 +1399,9 @@ static void link_task(void *arg) {
         for (int n = 0; n < s_zn; n++) {
             int i = (bgNext + n) % s_zn;
             if (i == s_active) continue;
-            uint32_t iv = zone_cross_channel(i) ? XCH_PROBE_MS
-                        : zones_open ? ZONES_OPEN_PROBE_MS : BG_PROBE_MS;
+            /* Cross-channel telemetry belongs inside the visit below. */
+            if (zone_cross_channel(i)) continue;
+            uint32_t iv = zones_open ? ZONES_OPEN_PROBE_MS : BG_PROBE_MS;
             if (now - s_z[i].lastProbeMs < iv) continue;
             probe_tx(i, probe_want(i, 0), now, "PROBE");
             s_z[i].lastProbeMs = now;
@@ -1376,10 +1410,14 @@ static void link_task(void *arg) {
             break;
         }
 
-        if (zones_open && (now - lastHopMs) >= ZONE_HOP_INTERVAL_MS) {
+        if ((now - lastHopMs) >= ZONE_HOP_INTERVAL_MS) {
             for (int n = 0; n < s_zn; n++) {
                 int i = (hopNext + n) % s_zn;
                 if (i == s_active) continue;
+                /* Keep every controller alive while the picker is closed,
+                 * including when the display sleeps. Per-zone cadence keeps
+                 * several off-channel controllers from starving each other. */
+                if (!zones_open && now - s_z[i].lastHopProbeMs < BG_PROBE_MS) continue;
                 bool scan = espnow_chscan_due(s_z[i].chMiss, zone_online(i));
                 uint8_t hopCh = scan ? zone_scan_next(i, now) : 0;
                 if (!hopCh) {
@@ -1389,18 +1427,59 @@ static void link_task(void *arg) {
                 }
                 hopNext = (i + 1) % s_zn;
                 lastHopMs = now;
-                if (!radio_set_channel(hopCh)) {
-                    ESP_LOGE(TAG, "hop-poll retune -> ch %u failed", hopCh);
+                s_z[i].lastHopProbeMs = now;
+                if (esp_wifi_force_wakeup_acquire() != ESP_OK) {
+                    ESP_LOGW(TAG, "hop-poll could not hold the receiver awake");
                     break;
                 }
-                if (probe_tx(i, (uint8_t)(probe_want(i, 0) | SL2_WANT_STATE),
-                             now, scan ? "SCANPROBE" : "HOPPROBE"))
-                    vTaskDelay(pdMS_TO_TICKS(ZONE_HOP_DWELL_MS));
+                if (!radio_set_channel(hopCh)) {
+                    ESP_LOGE(TAG, "hop-poll retune -> ch %u failed", hopCh);
+                    esp_wifi_force_wakeup_release();
+                    break;
+                }
+                const uint32_t tuned = ms_stamp(now_ms());
+                const uint8_t want = (uint8_t)(probe_want(i, 0) | SL2_WANT_STATE);
+                if (probe_tx(i, want, now, scan ? "SCANPROBE" : "HOPPROBE")) {
+                    /* STATE may arrive before CAPS. A cold zone needs both
+                     * before its sensor support is known; keep RX awake for
+                     * the requested replies, within the same total budget. */
+                    while ((!espnow_reply_since(tuned, s_z[i].lastStateRxMs,
+                                                 s_z[i].lastStateCh, hopCh) ||
+                            ((want & SL2_WANT_CAPS) &&
+                             !espnow_reply_since(tuned, s_z[i].lastCapsRxMs,
+                                                  s_z[i].lastCapsCh, hopCh))) &&
+                           (uint32_t)(now_ms() - tuned) < ESPNOW_CH_CONFIRM_MS)
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    /* This visit's ACK plus STATE proves the channel even
+                     * when no telemetry is due to supply a second ACK.
+                     * STATE outranks that second ACK, so it also renews
+                     * the background ACK window. */
+                    if (espnow_reply_since(tuned, s_z[i].lastStateRxMs,
+                                            s_z[i].lastStateCh, hopCh)) {
+                        s_z[i].chMiss = 0;
+                        s_z[i].ackWin = espnow_ack_window(false);
+                        s_z[i].lastAckMs = ms_stamp(now_ms());
+                        s_z[i].lastAckCh = hopCh;
+                        if (s_z[i].bond.last_channel != hopCh) {
+                            ESP_LOGI(TAG, "zone %d channel confirmed %u -> %u", i,
+                                     s_z[i].bond.last_channel, hopCh);
+                            s_z[i].bond.last_channel = hopCh;
+                            espnow_bond_set_channel(s_z[i].bond.mac, hopCh);
+                        }
+                    }
+                    /* Keep telemetry on the visited channel. Leave event
+                     * processing until home: that queue also carries user
+                     * commands for the active zone. A queued epoch change
+                     * clears sensTxMs, forcing a fresh report next visit. */
+                    maybe_send_dial_info(i, now_ms());
+                    maybe_send_dial_sensor(i, now_ms());
+                }
                 for (int r = 0; r < 3; r++) {
                     if (radio_set_channel(s_channel))
                         break;
                     ESP_LOGE(TAG, "hop-poll home restore -> ch %u failed", s_channel);
                 }
+                esp_wifi_force_wakeup_release();
                 now = now_ms();
                 break;
             }
@@ -1425,8 +1504,8 @@ static void link_task(void *arg) {
                          ? (unsigned long)(now_ms() - s_z[s_active].lastAckMs) : 0UL);
             if (rx_stale) s_z[s_active].synced = false;
             s_z[s_active].ackWin = ESPNOW_ACK_WIN_ACTIVE_MS;
-            if (lvgl_port_lock(0)) { if (lost) alert_set(ALERT_NOLINK);
-                                     ui_set_link_state(true, false, s_z[s_active].bond.mac, s_z[s_active].rssi);
+            if (lost) espnow_offline_alert_start(&s_offline_alert, now_ms());
+            if (lvgl_port_lock(0)) { ui_set_link_state(true, false, s_z[s_active].bond.mac, s_z[s_active].rssi);
                                      push_zones_ui_locked();
                                      lvgl_port_unlock(); }
             sweep_begin();
@@ -1444,20 +1523,53 @@ void espnow_client_on_local_edit(void) {
     bool use_f = s_use_f;
     uint32_t now = now_ms();
 
-    if (s.set_dd != s_last_sent.set_dd) {
-        edit_hold_note(&s_set_hold, s.set_dd, now);
-        s_set_hold_use_f = use_f;
+    /* A sent value suppresses duplicates only within its current hold. After
+     * confirmation or expiry, another controller may have changed the value;
+     * selecting the earlier value again is a new command. While a hold is on,
+     * the UI is compared with the hold, not with the controller's value, so
+     * turning back to the controller's value cancels an unsent overshoot or
+     * queues a correction for one that already went out. */
+    bool set_changed = s_set_hold.on ? s.set_dd != s_set_hold.val
+                                     : s.set_dd != s_ctrl_set_dd;
+    if (set_changed) {
+        if (s_set_hold.on && s_tx_sent_temp == -1000 &&
+            s.set_dd == s_ctrl_set_dd) {
+            edit_hold_drop(&s_set_hold);
+        } else {
+            if (!s_set_hold.on) s_tx_sent_temp = -1000;
+            edit_hold_note(&s_set_hold, s.set_dd, now);
+            s_set_hold_use_f = use_f;
+        }
     }
-    if (s.set_lo_dd != s_last_sent.set_lo_dd || s.set_hi_dd != s_last_sent.set_hi_dd) {
-        edit_hold2_note(&s_band_hold, s.set_lo_dd, s.set_hi_dd, now);
-        s_band_hold_use_f = use_f;
+    bool band_changed = s_band_hold.on
+        ? (s.set_lo_dd != s_band_hold.lo || s.set_hi_dd != s_band_hold.hi)
+        : (s.set_lo_dd != s_ctrl_lo_dd || s.set_hi_dd != s_ctrl_hi_dd);
+    if (band_changed) {
+        if (s_band_hold.on && s_tx_sent_lo == -1000 && s_tx_sent_hi == -1000 &&
+            s.set_lo_dd == s_ctrl_lo_dd && s.set_hi_dd == s_ctrl_hi_dd) {
+            edit_hold2_drop(&s_band_hold);
+        } else {
+            if (!s_band_hold.on) s_tx_sent_lo = s_tx_sent_hi = -1000;
+            edit_hold2_note(&s_band_hold, s.set_lo_dd, s.set_hi_dd, now);
+            s_band_hold_use_f = use_f;
+        }
     }
 
     struct sl2_cmd_pkt c; memset(&c, 0, sizeof(c));
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
     if (s.mode != s_last_sent.mode)   { c.mask |= SL2_CM_MODE;  c.mode = mode_to_sl2(s.mode);
                                        edit_hold_note(&s_mode_hold, (int)s.mode, now); }
-    if (s.fan_pct != s_last_sent.fan_pct) edit_hold_note(&s_fan_hold, s.fan_pct, now);
+    bool fan_changed = s_fan_hold.on ? s.fan_pct != s_fan_hold.val
+                                     : s.fan_pct != s_ctrl_fan;
+    if (fan_changed) {
+        if (s_fan_hold.on && s_tx_sent_fan == -1000 &&
+            s.fan_pct == s_ctrl_fan) {
+            edit_hold_drop(&s_fan_hold);
+        } else {
+            if (!s_fan_hold.on) s_tx_sent_fan = -1000;
+            edit_hold_note(&s_fan_hold, s.fan_pct, now);
+        }
+    }
     if (s.vvane != s_last_sent.vvane) { c.mask |= SL2_CM_VANEV; c.vane_v = vvane_to_sl2(s.vvane);
                                        edit_hold_note(&s_vv_hold, (int)s.vvane, now); }
     if (s.hvane != s_last_sent.hvane) { c.mask |= SL2_CM_VANEH;
@@ -1470,6 +1582,27 @@ void espnow_client_on_local_edit(void) {
 
 void espnow_client_on_units_edit(bool use_f) {
     if (!edit_tx_allowed(s_zn, s_z[s_active].synced)) return;
+    /* Holds, sent values, and the controller's values are display values.
+     * Every later STATE is converted with the new unit, so move them too;
+     * a flip straight back restores them exactly. */
+    static struct { int zone; ui_dd_flip_t set, sent, lo, hi, sent_lo, sent_hi, cset, clo, chi; } m;
+    if (m.zone != s_active) { memset(&m, 0, sizeof m); m.zone = s_active; }  /* zone switched */
+    const uint8_t ftab = s_z[s_active].caps.ftab_id;
+    if (s_set_hold.on) {
+        s_set_hold.val = ui_dd_flip(&m.set,  s_set_hold.val, s_set_hold_use_f, use_f, ftab);
+        s_tx_sent_temp = ui_dd_flip(&m.sent, s_tx_sent_temp, s_set_hold_use_f, use_f, ftab);
+        s_set_hold_use_f = use_f;
+    }
+    if (s_band_hold.on) {
+        s_band_hold.lo = ui_dd_flip(&m.lo,      s_band_hold.lo, s_band_hold_use_f, use_f, ftab);
+        s_band_hold.hi = ui_dd_flip(&m.hi,      s_band_hold.hi, s_band_hold_use_f, use_f, ftab);
+        s_tx_sent_lo   = ui_dd_flip(&m.sent_lo, s_tx_sent_lo,   s_band_hold_use_f, use_f, ftab);
+        s_tx_sent_hi   = ui_dd_flip(&m.sent_hi, s_tx_sent_hi,   s_band_hold_use_f, use_f, ftab);
+        s_band_hold_use_f = use_f;
+    }
+    s_ctrl_set_dd = ui_dd_flip(&m.cset, s_ctrl_set_dd, s_use_f, use_f, ftab);
+    s_ctrl_lo_dd  = ui_dd_flip(&m.clo,  s_ctrl_lo_dd,  s_use_f, use_f, ftab);
+    s_ctrl_hi_dd  = ui_dd_flip(&m.chi,  s_ctrl_hi_dd,  s_use_f, use_f, ftab);
     edit_hold_note(&s_unit_hold, use_f ? 1 : 0, now_ms());
     s_use_f = use_f;
     s_z[s_active].st.use_f = use_f;
@@ -1500,6 +1633,7 @@ void espnow_client_on_room_source_id(uint64_t source_id) {
 }
 
 void espnow_client_ota_pause(bool paused) {
+    if (paused) atomic_store(&s_offline_alert_reset_due, true);
     s_ota_hold = paused;
     if (!paused) {
         s_wifi_resp_have = false;
@@ -1638,6 +1772,10 @@ static int cmd_pair(int argc, char **argv) {
     if (rc < 0) {
         printf("ERR bond %s\n", rc == -1 ? "table full" : "persist failed");
         return 1;
+    }
+    if (link_ota_refuse_restart()) {
+        printf("ESPNOW-PAIR OK; %s\n", LINK_OTA_SOAK_MSG);
+        return 0;
     }
     printf("ESPNOW-PAIR OK; restarting\n");
     vTaskDelay(pdMS_TO_TICKS(300));
@@ -2038,6 +2176,7 @@ static void pair_run(void) {
     }
 
     if (lvgl_port_lock(0)) { ui_set_pairing(PAIR_UI_SEARCHING, 0); lvgl_port_unlock(); }
+    atomic_store(&s_offline_alert_reset_due, true);
     s_have_resp = false; s_pairing = true;
 
     {
@@ -2135,7 +2274,7 @@ have_valid_resp:
     for (int i = 0; i < 20 && s_pair_ack_ms == 0 && !s_pair_cancel; i++) {
         sent++;
         if (link_send(unit_mac, &pr, sizeof pr, "PAIR_CONFIRM")) acked++;
-        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!s_pair_cancel) vTaskDelay(pdMS_TO_TICKS(20));
     }
     if (acked == 0 && s_pair_ack_ms == 0 && !s_pair_cancel) {
         ESP_LOGW(TAG, "pair: no ACKs — hunting the controller's channel");
@@ -2152,12 +2291,21 @@ have_valid_resp:
     for (int i = 0; i < 100 && s_pair_ack_ms == 0 && !s_pair_cancel; i++) {
         sent++;
         if (link_send(unit_mac, &pr, sizeof pr, "PAIR_CONFIRM")) acked++;
-        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!s_pair_cancel) vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    /* A radio ACK means the controller may already have stored the new key.
+     * Give its authenticated ACK a bounded chance to arrive before cancel. */
+    if (acked > 0 && s_pair_cancel && s_pair_ack_ms == 0) {
+        uint32_t cancel_start = now_ms();
+        while (s_pair_ack_ms == 0 && (uint32_t)(now_ms() - cancel_start) < 250)
+            vTaskDelay(pdMS_TO_TICKS(10));
     }
     ESP_LOGW(TAG, "pair: key confirmations sent=%d acked=%d", sent, acked);
-    if (s_pair_cancel) goto cancelled;
+    /* Stop accepting ACKs first so none lands after the check below. An
+     * authenticated ACK means the controller already stored the new key:
+     * it beats a cancel, and the old key must not come back. */
+    pair_confirm_stop();
     if (s_pair_ack_ms != 0) {
-        pair_confirm_stop();
         uint8_t ch = 0; wifi_second_chan_t c2; esp_wifi_get_channel(&ch, &c2);
         espnow_bond_rec_t rec; memset(&rec, 0, sizeof rec);
         memcpy(rec.mac, unit_mac, 6);
@@ -2168,6 +2316,9 @@ have_valid_resp:
         if (idx < 0) {
             ESP_LOGE(TAG, "pair: bond %s — NOT paired",
                      idx == -1 ? "table full" : "persist failed");
+            /* Keep a known zone on the controller's key until reboot. */
+            int known = zone_by_mac(unit_mac);
+            if (known >= 0) memcpy(s_z[known].bond.lmk, lmk, 16);
             goto fail;
         }
         prefs_set_u8("activeZone", (uint8_t)idx);
@@ -2175,9 +2326,21 @@ have_valid_resp:
                  (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)PAIR_TASK_STACK);
         if (lvgl_port_lock(0)) { ui_set_pairing(PAIR_UI_OK, 0); lvgl_port_unlock(); }
         vTaskDelay(pdMS_TO_TICKS(800));
+        if (link_ota_refuse_restart()) {
+            s_pairing = false;
+            /* A known zone must keep the controller's confirmed key in RAM. */
+            int known = zone_by_mac(unit_mac);
+            if (known >= 0) memcpy(s_z[known].bond.lmk, lmk, 16);
+            if (esp_now_is_peer_exist(PAIR_BCAST)) esp_now_del_peer(PAIR_BCAST);
+            if (lvgl_port_lock(0)) {
+                ui_set_pairing(PAIR_UI_SAVED, 0);
+                lvgl_port_unlock();
+            }
+            return;
+        }
         esp_restart();
     }
-    pair_confirm_stop();
+    if (s_pair_cancel) goto cancelled;
     ESP_LOGW(TAG, "pair: no authenticated PAIR_ACK within ~6s");
     }
 fail:
@@ -2257,6 +2420,7 @@ void espnow_client_cancel_pairing(void) {
 }
 
 void espnow_client_forget(void) {
+    if (link_ota_refuse_restart()) return;
     zones_init();
     espnow_bond_remove(s_active);
     prefs_set_u8("activeZone", 0);

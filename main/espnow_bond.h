@@ -56,5 +56,7 @@ static inline int espnow_bonds_find(const espnow_bond_rec_t *r, int n,
 int  espnow_bonds_load(espnow_bond_rec_t out[ESPNOW_MAX_BONDS]);
 int  espnow_bond_add(const espnow_bond_rec_t *r);
 void espnow_bond_remove(int idx);
-void espnow_bond_set_channel(int idx, uint8_t ch);
-void espnow_bond_set_name(int idx, const char *name, uint8_t caps_seq);
+/* Keyed by MAC: a remove shifts indices, so an index held across one could
+ * land on another zone's record. Unknown MACs are ignored. */
+void espnow_bond_set_channel(const uint8_t mac[6], uint8_t ch);
+void espnow_bond_set_name(const uint8_t mac[6], const char *name, uint8_t caps_seq);

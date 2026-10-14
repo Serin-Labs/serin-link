@@ -81,18 +81,6 @@ static void test_action_labels(void) {
     assert(strcmp(stage_str(0x77), "?") == 0);
 }
 
-static void test_action_moves_air(void) {
-    assert(action_moves_air(SL2_ACT_HEATING));
-    assert(action_moves_air(SL2_ACT_COOLING));
-    assert(action_moves_air(SL2_ACT_DRYING));
-    assert(action_moves_air(SL2_ACT_FAN));
-    assert(!action_moves_air(SL2_ACT_UNKNOWN));
-    assert(!action_moves_air(SL2_ACT_IDLE));
-    assert(!action_moves_air(SL2_ACT_DEFROST));
-    assert(!action_moves_air(SL2_ACT_PREHEAT));
-    assert(!action_moves_air(SL2_ACT_STANDBY));
-}
-
 static void test_tlv_str2_two_strings(void) {
     char a[8], b[8];
     const uint8_t v[] = { 'x', 'y', 's', 's', 'i', 'd', 0, 'i', 'p' };
@@ -143,7 +131,6 @@ int main(void) {
     test_hvane_split_position();
     test_vanecap_bits_are_independent();
     test_action_labels();
-    test_action_moves_air();
     test_tlv_str2_two_strings();
     test_tlv_str2_missing_nul_bounds_first();
     test_tlv_str2_short_and_empty();

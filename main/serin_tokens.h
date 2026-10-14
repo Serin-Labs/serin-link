@@ -38,6 +38,16 @@
 #define UI_DIP_IN_MS        200
 #define SERIN_IND_HALF_DEG  8.5f
 
+/* Shared dial slots in the 480 px design canvas. */
+#define SERIN_SLOT_TITLE_Y    197
+#define SERIN_SLOT_DETAIL_Y   233
+#define SERIN_SLOT_CONTROL_Y  276
+#define SERIN_SLOT_HINT_TOP   316
+#define SERIN_SLOT_CONTROL_W  230
+#define SERIN_SLOT_CONTROL_H   88
+/* Narrower action targets clear every selector ring density (2–8 stops). */
+#define SERIN_SLOT_ACTION_W   200
+
 #if SERIN_DISP == 466
 #define SERIN_PPMM  12.23f
 #else

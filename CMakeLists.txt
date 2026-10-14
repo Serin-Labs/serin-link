@@ -17,4 +17,8 @@ if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/secure_boot_signing_key.pem)
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Names the output files for every board. The app descriptor's project_name
+# is per board instead: see main/project_include.cmake.
 project(serin_link)
+
+include(cmake/knob_power_save.cmake)

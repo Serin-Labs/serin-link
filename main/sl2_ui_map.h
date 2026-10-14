@@ -100,16 +100,6 @@ static inline bool action_active(uint8_t a) {
     }
 }
 
-static inline bool action_moves_air(uint8_t a) {
-    switch (a) {
-        case SL2_ACT_HEATING: case SL2_ACT_COOLING:
-        case SL2_ACT_DRYING:  case SL2_ACT_FAN:
-            return true;
-        default:
-            return false;
-    }
-}
-
 static inline ui_screen_gate_t sl2_screen_gate_from_flags2(uint8_t flags2) {
     if (!(flags2 & SL2_SF2_SCREEN_CTL)) return UI_SCREEN_GATE_NONE;
     return (flags2 & SL2_SF2_SCREEN_OFF) ? UI_SCREEN_GATE_OFF : UI_SCREEN_GATE_ON;

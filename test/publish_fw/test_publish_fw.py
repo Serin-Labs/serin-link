@@ -36,7 +36,20 @@ RELEASE_SDKCONFIG = (
     "CONFIG_PARTITION_TABLE_OFFSET=0x8000\n"
     "CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y\n"
     f'CONFIG_SERIN_LINK_OTA_MANIFEST_URL="{FEED}/stable/manifest.json"\n'
-    f'CONFIG_SERIN_LINK_OTA_MANIFEST_BETA_URL="{FEED}/beta/manifest.json"\n')
+    f'CONFIG_SERIN_LINK_OTA_MANIFEST_BETA_URL="{FEED}/beta/manifest.json"\n'
+    "CONFIG_SERIN_SHT40_OFFSET_CC=100\n"
+    "CONFIG_SERIN_SHT40_RH_GAIN_PPT=1110\n")
+# The checkout's defaults chain. Like the real files, only the 1.5" overlay
+# sets the sensor trim that RELEASE_SDKCONFIG carries.
+TRIM = {"CONFIG_SERIN_SHT40_OFFSET_CC": "100", "CONFIG_SERIN_SHT40_RH_GAIN_PPT": "1110"}
+CHECKOUT_DEFAULTS = {
+    "sdkconfig.defaults": "CONFIG_PARTITION_TABLE_OFFSET=0x8000\n",
+    "sdkconfig.defaults.viewe": ("CONFIG_SERIN_BOARD_VIEWE_15=y\n"
+                                 "# Kit enclosure trim\n"
+                                 "CONFIG_SERIN_SHT40_OFFSET_CC=100\n"
+                                 "CONFIG_SERIN_SHT40_RH_GAIN_PPT=1110\n"),
+    "sdkconfig.defaults.viewe21": "CONFIG_SERIN_BOARD_VIEWE_21=y\n",
+}
 spec = importlib.util.spec_from_file_location("publish_fw", REPO / "tools/publish_fw.py")
 publish = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish)
@@ -88,6 +101,8 @@ class StagingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / "version.txt").write_text("0.1.6\n")
+        for name, text in CHECKOUT_DEFAULTS.items():
+            (self.root / name).write_text(text)
         for field, value in (("ROOT", self.root),
                              ("RELEASE_PUBLIC_KEY", self.keys / "release.pub"),
                              ("SIGNKEY_OVERLAY", self.root / "sdkconfig.signkey.tmp"),
@@ -287,6 +302,53 @@ class StagingTests(unittest.TestCase):
                     with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
                         self.assert_rejected(args, stage, previous, message=f"{channel} manifest url")
             cfg.write_text(RELEASE_SDKCONFIG)
+
+    def test_no_build_refuses_a_build_dir_with_stale_sensor_trim(self):
+        # IDF reads the overlays only when it creates sdkconfig, so a build dir
+        # configured before a trim change still signs and verifies cleanly.
+        stale = {"CONFIG_SERIN_SHT40_OFFSET_CC": "153", "CONFIG_SERIN_SHT40_RH_GAIN_PPT": "1097"}
+        for kind, factory in (("pub", False), ("fac", True)):
+            cfg = self.root / f"build_{kind}_viewe15/sdkconfig"
+            stage, previous = self.existing_release(factory=factory)
+            args = ["--no-build"] + (["--factory"] if factory else [])
+            for key, old in stale.items():
+                changed = RELEASE_SDKCONFIG.replace(f"{key}={TRIM[key]}", f"{key}={old}")
+                missing = RELEASE_SDKCONFIG.replace(f"{key}={TRIM[key]}\n", "")
+                for case, text in (("stale", changed), ("missing", missing)):
+                    with self.subTest(factory=factory, key=key, case=case):
+                        self.assertNotEqual(text, RELEASE_SDKCONFIG)
+                        cfg.write_text(text)
+                        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+                            self.assert_rejected(args, stage, previous, message=key.lower())
+            cfg.write_text(RELEASE_SDKCONFIG)
+            shutil.rmtree(stage)
+
+    def test_no_build_follows_an_overlay_edit_not_the_old_build(self):
+        overlay = self.root / "sdkconfig.defaults.viewe"
+        overlay.write_text(overlay.read_text().replace("OFFSET_CC=100", "OFFSET_CC=90"))
+        stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, message="config_serin_sht40_offset_cc")
+        cfg = self.root / "build_pub_viewe15/sdkconfig"
+        cfg.write_text(RELEASE_SDKCONFIG.replace("OFFSET_CC=100", "OFFSET_CC=90"))
+        code, output = self.run_publish("--no-build")
+        self.assertEqual(code, 0, output)
+
+    def test_no_build_needs_the_board_overlays_it_compares_against(self):
+        (self.root / "sdkconfig.defaults.viewe").unlink()
+        stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, message="sdkconfig.defaults.viewe")
+
+    def test_board_trim_comes_from_the_checkout_overlay_chain(self):
+        # Later files in the chain win; a board whose chain sets no trim has
+        # nothing to compare.
+        (self.root / "sdkconfig.defaults").write_text("CONFIG_SERIN_SHT40_OFFSET_CC=153\n")
+        self.assertEqual(publish.board_calibration("viewe15"), TRIM)
+        self.assertEqual(publish.board_calibration("viewe21"), {"CONFIG_SERIN_SHT40_OFFSET_CC": "153"})
+        (self.root / "sdkconfig.defaults").write_text("")
+        self.assertEqual(publish.board_calibration("viewe21"), {})
+        # The real 1.5" overlay pins both values, so the guard is never vacuous there.
+        with patch.object(publish, "ROOT", REPO):
+            self.assertEqual(set(publish.board_calibration("viewe15")), set(TRIM))
 
     def test_development_images_may_use_their_own_feeds(self):
         own = RELEASE_SDKCONFIG.replace(FEED, "https://updates.example/link")

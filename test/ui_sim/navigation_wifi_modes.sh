@@ -18,19 +18,20 @@ def expect(commands,*texts):
     output=run(commands)
     for text in texts: assert text in output, 'missing '+repr(text)+'\n'+output
 # Only entry from Home resets the menu selection; submenu returns retain it.
+# Settle the screen fade before querying visible labels; info is synchronous.
 for reopen in ('press', 'tap 240 240'):
     check('Menu selects Home after Back via '+reopen,
           lambda action=reopen: expect('press; turn -1; press; wait 400; '+action+'; wait 400; labels; press; info',
                                       'text=Home', 'screen=thermostat'))
 check('Menu selects Home after applying a mode',
-      lambda: expect('press; turn 1; press; press; press; labels', 'text=Home'))
+      lambda: expect('press; turn 1; press; press; press; wait 300; labels', 'text=Home'))
 check('Menu selects Home with optional items hidden',
-      lambda: expect('caps fan_steps=0 fan_auto=0 vane_v=0 vane_h=0; press; turn -1; press; press; labels',
+      lambda: expect('caps fan_steps=0 fan_auto=0 vane_v=0 vane_h=0; press; turn -1; press; press; wait 300; labels',
                      'text=Home'))
 check('Settings return retains menu selection',
-      lambda: expect('press; turn 3; press; turn -1; press; labels', 'text=Settings'))
+      lambda: expect('press; turn 3; press; turn -1; press; wait 300; labels', 'text=Settings'))
 check('Mode return retains menu selection',
-      lambda: expect('press; turn 1; press; turn 6; press; labels', 'text=Mode'))
+      lambda: expect('press; turn 1; press; turn 6; press; wait 300; labels', 'text=Mode'))
 # Back retraces the way in.  `screen <name>` jumps straight from the thermostat,
 # which is what the home dial's own shortcuts do, so each pair below opens the
 # same screen twice and expects a different landing.
@@ -66,8 +67,8 @@ check('Zones opened from Advanced returns to Advanced',
 check('Back skips the update readout',
       lambda: expect('bridge 1 1 -50; ota uptodate; wait 100; press; wait 100; turn 2; press; wait 100; info',
                      'screen=thermostat'))
-check('Heat/Cool identity', lambda: expect('caps modes=0x19; state mode=heat_cool; screen mode; labels; press; info','text=Heat/Cool','text=Sets a temperature range','mode=heat_cool'))
-check('Auto identity', lambda: expect('caps modes=0x19; state mode=auto; screen mode; labels; press; info','text=Auto','text=Automatic mode','mode=auto'))
+check('Heat/Cool identity', lambda: expect('caps modes=0x19; state mode=heat_cool; screen mode; wait 300; labels; press; info','text=Heat/Cool','text=Sets a temperature range','mode=heat_cool'))
+check('Auto identity', lambda: expect('caps modes=0x19; state mode=auto; screen mode; wait 300; labels; press; info','text=Auto','text=Automatic mode','mode=auto'))
 base='bridge 1 1 -50; caps features={features}; state wifi_setup_avail=1 wifi_provisioned=0 wifi_connected=0 wifi_setup_ap=1 hk_paired={paired}; screen settings; turn 1; press; wait 100; state wifi_connected=1 wifi_setup_ap=0; wait 100; '
 for features,paired in [(512,0),(514,1)]:
     prefix=base.format(features=features,paired=paired)
@@ -78,5 +79,19 @@ check('Removed pairing capability leaves QR',lambda: expect(base.format(features
 check('Setup pairing completion restores Wi-Fi',lambda: expect(base.format(features=514,paired=0)+'press; state hk_paired=1; press; info','screen=settings','set_sel=wifi'))
 check('Skipping setup pairing restores Wi-Fi',lambda: expect(base.format(features=514,paired=0)+'press; press; info','screen=settings','set_sel=wifi'))
 check('Direct home pairing restores HomeKit',lambda: expect('bridge 1 1 -50; caps features=514; state hk_paired=0; screen settings; turn 3; press; state hk_paired=1; press; info','screen=settings','set_sel=homekit'))
+# While syncing, the controller has not confirmed the zone, so a change would
+# be dropped. Mode and Airflow refuse it and return home to the Syncing chip.
+syncing='bridge 1 1 -50; wait 60; state alert=syncing; wait 60; '
+def refused(commands, *texts):
+    output=run(syncing+commands+'; wait 200; info; labels')
+    for text in ('screen=thermostat','text=Syncing')+texts:
+        assert text in output, 'missing '+repr(text)+'\n'+output
+    assert 'CMD: mode=' not in output, 'unexpected command\n'+output
+check('Mode commit while syncing keeps the mode', lambda: refused('screen mode; wait 100; turn 1; press','mode=heat'))
+check('Menu Mode commit while syncing keeps the mode', lambda: refused('press; wait 100; turn 1; press; wait 100; turn 1; press','mode=heat'))
+check('Menu Airflow while syncing stays home', lambda: refused('press; wait 100; turn 2; press'))
+check('Mode Back while syncing still retraces', lambda: expect(syncing+'press; wait 100; turn 1; press; wait 100; turn 6; press; info','screen=menu'))
+check('Mode commit after syncing applies', lambda: expect(syncing+'state alert=none; wait 60; screen mode; wait 100; turn 1; press; info','mode=cool','CMD: mode=COOL'))
 if checks: sys.exit(1)
 PY
+python3 "$(dirname "$0")/selector_layout.py"

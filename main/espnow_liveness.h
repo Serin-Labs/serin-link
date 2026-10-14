@@ -88,6 +88,43 @@ static inline bool espnow_hunt_due(bool link_fresh, bool stuck_sync, bool rx_sta
     return !link_fresh || stuck_sync || rx_stale;
 }
 
+/* Search immediately, but give recovery time before the full-screen warning.
+ * One outage spans every search round; only recovery or leaving it resets it. */
+#define ESPNOW_OFFLINE_ALERT_GRACE_MS 3000
+
+typedef struct {
+    uint32_t started_ms;
+    bool active;
+    bool shown;
+} espnow_offline_alert_t;
+
+static inline void espnow_offline_alert_start(espnow_offline_alert_t *alert,
+                                             uint32_t now_ms) {
+    if (alert->active) return;
+    alert->started_ms = now_ms;
+    alert->active = true;
+    alert->shown = false;
+}
+
+static inline void espnow_offline_alert_reset(espnow_offline_alert_t *alert) {
+    *alert = (espnow_offline_alert_t){0};
+}
+
+/* Receipt can precede UI event processing. A queued STATE already proves
+ * recovery; a STATE from before this outage cannot cancel the warning. */
+static inline void espnow_offline_alert_note_reply(espnow_offline_alert_t *alert,
+                                                  uint32_t last_state_rx_ms) {
+    if (alert->active && last_state_rx_ms != 0 &&
+        (uint32_t)(last_state_rx_ms - alert->started_ms) < 0x80000000u)
+        espnow_offline_alert_reset(alert);
+}
+
+static inline bool espnow_offline_alert_due(const espnow_offline_alert_t *alert,
+                                           uint32_t now_ms) {
+    return alert->active && !alert->shown &&
+           (uint32_t)(now_ms - alert->started_ms) >= ESPNOW_OFFLINE_ALERT_GRACE_MS;
+}
+
 static inline bool espnow_heal_due(bool acked, uint8_t ack_ch, uint8_t remembered,
                                    bool reply_on_ack_ch) {
     return acked && ack_ch != 0 && remembered != ack_ch && reply_on_ack_ch;

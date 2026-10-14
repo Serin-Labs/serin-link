@@ -99,4 +99,5 @@ expect "$LOG" 'text=Back$' 'Back cannot be reached after a full catalog'
 expect_not "$LOG" '^CMD: room_source_id=' 'Back after a full catalog sent a source ID'
 
 if ((fail)); then exit 1; fi
+python3 "$(dirname "$0")/room_source_touch.py"
 echo 'PASS room-source'

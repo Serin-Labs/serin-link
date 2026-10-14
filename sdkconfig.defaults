@@ -50,6 +50,7 @@ CONFIG_LV_OS_FREERTOS=y
 
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_PM_ENABLE=y
 
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
@@ -101,6 +102,12 @@ CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
 
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 CONFIG_LWIP_DHCPS=n
+# OTA TLS checks certificate validity dates against the SNTP time that
+# link_ota.c fetches after joining Wi-Fi, or against the firmware build time
+# when SNTP fails. Send that request at once instead of after lwIP's random
+# startup delay of up to 5 s.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+CONFIG_LWIP_SNTP_STARTUP_DELAY=n
 CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
 CONFIG_MBEDTLS_SSL_RENEGOTIATION=n
 CONFIG_MBEDTLS_KEY_EXCHANGE_RSA=n

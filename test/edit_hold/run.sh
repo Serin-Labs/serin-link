@@ -7,3 +7,4 @@ cd "$(dirname "$0")"
 gcc -std=c11 -Wall -Wextra -Werror -I../../main \
     test_edit_hold.c -o /tmp/test_edit_hold
 /tmp/test_edit_hold
+python3 test_client_edits.py

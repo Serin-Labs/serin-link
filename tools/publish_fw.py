@@ -268,6 +268,39 @@ def assert_factory_chain(bdir: pathlib.Path) -> None:
             sys.exit(f"{cfg} lacks {want} — stale build dir from before the "
                      f"release chain; re-run without --no-build")
 
+# Sensor trim that lives in the board overlays. IDF applies SDKCONFIG_DEFAULTS
+# only when it creates a build dir's sdkconfig, so a build dir configured before
+# an overlay edit keeps the old trim, and its image signs and verifies cleanly.
+CALIBRATION_KEYS = ("CONFIG_SERIN_SHT40_OFFSET_CC", "CONFIG_SERIN_SHT40_RH_GAIN_PPT")
+
+def _calibration_values(text: str) -> dict[str, str]:
+    values = {}
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key in CALIBRATION_KEYS:
+            values[key] = value.strip()
+    return values
+
+def board_calibration(board: str) -> dict[str, str]:
+    """The trim this checkout sets for `board`; later files in its chain win."""
+    expected = {}
+    for name in BOARDS[board].split(";"):
+        try:
+            expected.update(_calibration_values((ROOT / name).read_text()))
+        except OSError as error:
+            sys.exit(f"Cannot read {name} to check the {board} sensor calibration: {error}")
+    return expected
+
+def assert_board_calibration(bdir: pathlib.Path, board: str) -> None:
+    """Refuse a reused build dir whose sensor trim differs from the checkout's overlays."""
+    cfg = bdir / "sdkconfig"
+    actual = _calibration_values(cfg.read_text())
+    for key, want in board_calibration(board).items():
+        got = actual.get(key, "unset")
+        if got != want:
+            sys.exit(f"{cfg}: {key} is {got}, but the {board} defaults ({BOARDS[board]}) set {want}. "
+                     "The build dir predates that overlay edit; re-run without --no-build")
+
 def assert_distribution_urls(bdir: pathlib.Path) -> None:
     """Refuse a production image whose updater would not poll the public feeds.
 
@@ -481,6 +514,8 @@ def main() -> int:
                 bdir = ROOT / f"build_fac_{board}" if args.no_build \
                        else build_factory(board, BOARDS[board], signing_key, version)
                 assert_factory_chain(bdir)
+                if args.no_build:
+                    assert_board_calibration(bdir, board)
                 if not args.development:
                     assert_distribution_urls(bdir)
                 with tempfile.TemporaryDirectory(prefix="serin-factory-check-") as tmp:
@@ -517,6 +552,8 @@ def main() -> int:
         if not binary.exists():
             sys.exit(f"missing {binary}; build it first or drop --no-build")
         assert_factory_chain(ROOT / f"build_pub_{board}")
+        if args.no_build:
+            assert_board_calibration(ROOT / f"build_pub_{board}", board)
         if not args.development:
             assert_distribution_urls(ROOT / f"build_pub_{board}")
         data = binary.read_bytes()

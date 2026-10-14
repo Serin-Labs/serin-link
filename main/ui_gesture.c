@@ -113,6 +113,12 @@ static void uig_clicked(lv_event_t *e)
     g->cls = CLS_PLAIN;
 }
 
+/* A rebuilt screen attaches a fresh recognizer; free the old one with its object. */
+static void uig_deleted(lv_event_t *e)
+{
+    free(lv_event_get_user_data(e));
+}
+
 uig_t *uig_attach(lv_obj_t *obj, const uig_cfg_t *cfg)
 {
     uig_t *g = calloc(1, sizeof *g);
@@ -123,6 +129,7 @@ uig_t *uig_attach(lv_obj_t *obj, const uig_cfg_t *cfg)
     lv_obj_add_event_cb(obj, uig_released, LV_EVENT_RELEASED,     g);
     lv_obj_add_event_cb(obj, uig_long,     LV_EVENT_LONG_PRESSED, g);
     lv_obj_add_event_cb(obj, uig_clicked,  LV_EVENT_CLICKED,      g);
+    lv_obj_add_event_cb(obj, uig_deleted,  LV_EVENT_DELETE,       g);
     return g;
 }
 

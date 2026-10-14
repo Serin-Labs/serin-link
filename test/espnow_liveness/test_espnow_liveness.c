@@ -262,6 +262,88 @@ static void test_healthy_zone_does_not_hunt(void) {
     assert(!espnow_hunt_due(true, false, false));
 }
 
+static void test_recovery_starts_before_the_offline_alert(void) {
+    espnow_offline_alert_t alert = {0};
+    const uint32_t last_contact = 1000;
+    const uint32_t lost = 5000;
+    assert(espnow_hunt_due(espnow_link_fresh(lost, last_contact,
+                          ESPNOW_ACK_WIN_ACTIVE_MS, last_contact), false, false));
+    espnow_offline_alert_start(&alert, lost);
+    assert(!espnow_offline_alert_due(&alert, lost));
+    assert(!espnow_offline_alert_due(&alert, 7999));
+    assert(espnow_offline_alert_due(&alert, 8000));
+}
+
+static void test_brief_recovery_cancels_the_offline_alert(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, 5000);
+    assert(!espnow_offline_alert_due(&alert, 6600));
+    espnow_offline_alert_reset(&alert);
+    assert(!espnow_offline_alert_due(&alert, 8000));
+    assert(!espnow_offline_alert_due(&alert, 60000));
+}
+
+static void test_queued_recovery_reply_cancels_the_offline_alert(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, 5000);
+    /* A wake event can leave this STATE queued until after the deadline. */
+    espnow_offline_alert_note_reply(&alert, 7999);
+    assert(!espnow_offline_alert_due(&alert, 8005));
+}
+
+static void test_old_reply_cannot_cancel_the_offline_alert(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, 5000);
+    espnow_offline_alert_note_reply(&alert, 0);
+    espnow_offline_alert_note_reply(&alert, 4999);
+    assert(espnow_offline_alert_due(&alert, 8000));
+}
+
+static void test_queued_recovery_reply_handles_clock_wrap(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, UINT32_MAX - 1000);
+    espnow_offline_alert_note_reply(&alert, UINT32_MAX - 1001);
+    assert(espnow_offline_alert_due(&alert, 1999));
+    espnow_offline_alert_note_reply(&alert, 1500);
+    assert(!espnow_offline_alert_due(&alert, 1999));
+}
+
+static void test_search_rounds_do_not_restart_the_alert_grace(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, 5000);
+    espnow_offline_alert_start(&alert, 6000);
+    espnow_offline_alert_start(&alert, 7900);
+    assert(!espnow_offline_alert_due(&alert, 7999));
+    assert(espnow_offline_alert_due(&alert, 8000));
+    alert.shown = true;
+    espnow_offline_alert_start(&alert, 9000);
+    assert(!espnow_offline_alert_due(&alert, 12000));
+}
+
+static void test_new_outage_gets_its_own_alert_grace(void) {
+    espnow_offline_alert_t alert = {0};
+    espnow_offline_alert_start(&alert, 5000);
+    assert(espnow_offline_alert_due(&alert, 8000));
+    alert.shown = true;
+    /* A recovered connection or a zone switch ends the old outage. */
+    espnow_offline_alert_reset(&alert);
+    espnow_offline_alert_start(&alert, 9000);
+    assert(!espnow_offline_alert_due(&alert, 11999));
+    assert(espnow_offline_alert_due(&alert, 12000));
+}
+
+static void test_offline_alert_handles_zero_and_clock_wrap(void) {
+    espnow_offline_alert_t alert = {0};
+    assert(!espnow_offline_alert_due(&alert, 60000));
+    espnow_offline_alert_start(&alert, 0);
+    assert(!espnow_offline_alert_due(&alert, 2999));
+    assert(espnow_offline_alert_due(&alert, 3000));
+    espnow_offline_alert_reset(&alert);
+    espnow_offline_alert_start(&alert, UINT32_MAX - 1000);
+    assert(!espnow_offline_alert_due(&alert, 1998));
+    assert(espnow_offline_alert_due(&alert, 1999));
+}
+
 static void test_ack_alone_does_not_lock_a_channel(void) {
     assert(!espnow_lock_ok(true, false));
     assert(espnow_lock_ok(true, true));
@@ -351,6 +433,14 @@ int main(void) {
     test_acked_but_silent_zone_still_hunts();
     test_lost_zone_hunts();
     test_healthy_zone_does_not_hunt();
+    test_recovery_starts_before_the_offline_alert();
+    test_brief_recovery_cancels_the_offline_alert();
+    test_queued_recovery_reply_cancels_the_offline_alert();
+    test_old_reply_cannot_cancel_the_offline_alert();
+    test_queued_recovery_reply_handles_clock_wrap();
+    test_search_rounds_do_not_restart_the_alert_grace();
+    test_new_outage_gets_its_own_alert_grace();
+    test_offline_alert_handles_zero_and_clock_wrap();
     test_ack_alone_does_not_lock_a_channel();
     test_reply_must_be_heard_on_the_probed_channel();
     test_reply_older_than_the_question_is_not_an_answer();

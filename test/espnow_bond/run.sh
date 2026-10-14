@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Mehmet Bayram
 set -euo pipefail
-trap 'rm -f /tmp/test_espnow_bond' EXIT
+trap 'rm -f /tmp/test_espnow_bond /tmp/test_bond_table' EXIT
 cd "$(dirname "$0")"
 gcc -std=c11 -Wall -Wextra -Werror -I../../main \
     test_espnow_bond.c -o /tmp/test_espnow_bond
 /tmp/test_espnow_bond
+gcc -std=c11 -Wall -Wextra -Werror -Istub -I../../main \
+    test_bond_table.c ../../main/espnow_bond.c -o /tmp/test_bond_table
+/tmp/test_bond_table

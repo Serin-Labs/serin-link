@@ -191,39 +191,39 @@ static void test_rh_cc_tracks_pct_within_one_percent(void) {
     }
 }
 
-static void test_airflow_blend_snaps_at_or_past_tau(void) {
-    assert(sht40_airflow_step_q8(0, 2300, 600000, 600000) == 2300 << 8);
-    assert(sht40_airflow_step_q8(0, 2300, 900000, 600000) == 2300 << 8);
-    assert(sht40_airflow_step_q8(12345, 0, 600000, 0) == 0);
+static void test_lpf_snaps_at_or_past_tau(void) {
+    assert(sht40_lpf_step_q8(0, 2300, 600000, 600000) == 2300 << 8);
+    assert(sht40_lpf_step_q8(0, 2300, 900000, 600000) == 2300 << 8);
+    assert(sht40_lpf_step_q8(12345, 0, 600000, 0) == 0);
 }
 
-static void test_airflow_blend_first_step_fraction(void) {
-    assert(sht40_airflow_step_q8(0, 2300, 10000, 600000) == 9813);
+static void test_lpf_first_step_fraction(void) {
+    assert(sht40_lpf_step_q8(0, 2300, 10000, 600000) == 9813);
 }
 
-static void test_airflow_blend_efold_at_tau(void) {
+static void test_lpf_efold_at_tau(void) {
     int32_t q = 0;
-    for (int i = 0; i < 60; i++) q = sht40_airflow_step_q8(q, 23, 10000, 600000);
+    for (int i = 0; i < 60; i++) q = sht40_lpf_step_q8(q, 23, 10000, 600000);
     const int16_t cc = sht40_q8_to_cc(q);
     assert(cc >= 14 && cc <= 15);
 }
 
-static void test_airflow_blend_step_is_tau_symmetric(void) {
+static void test_lpf_step_is_tau_symmetric(void) {
     int32_t q = 23 << 8;
-    for (int i = 0; i < 60; i++) q = sht40_airflow_step_q8(q, 0, 10000, 600000);
+    for (int i = 0; i < 60; i++) q = sht40_lpf_step_q8(q, 0, 10000, 600000);
     const int16_t cc = sht40_q8_to_cc(q);
     assert(cc >= 8 && cc <= 9);
 }
 
-static void test_airflow_blend_converges_fully(void) {
+static void test_lpf_converges_fully(void) {
     int32_t q = 0;
-    for (int i = 0; i < 300; i++) q = sht40_airflow_step_q8(q, 23, 10000, 600000);
+    for (int i = 0; i < 300; i++) q = sht40_lpf_step_q8(q, 23, 10000, 600000);
     assert(sht40_q8_to_cc(q) == 23);
-    for (int i = 0; i < 300; i++) q = sht40_airflow_step_q8(q, 0, 10000, 600000);
+    for (int i = 0; i < 300; i++) q = sht40_lpf_step_q8(q, 0, 10000, 600000);
     assert(sht40_q8_to_cc(q) == 0);
 }
 
-static void test_airflow_q8_rounds_to_nearest_cc(void) {
+static void test_q8_rounds_to_nearest_cc(void) {
     assert(sht40_q8_to_cc(383) == 1);
     assert(sht40_q8_to_cc(384) == 2);
     assert(sht40_q8_to_cc(-383) == -1);
@@ -241,13 +241,6 @@ static void test_lpf_step_toward_negative_target_lands(void) {
     assert(sht40_lpf_step_q8(0, -1000, 10000, 300000) == -8533);
 }
 
-static void test_lpf_is_the_airflow_primitive(void) {
-    assert(sht40_airflow_step_q8(0, 2300, 10000, 600000) ==
-           sht40_lpf_step_q8(0, 2300, 10000, 600000));
-    assert(sht40_airflow_step_q8(12345, 0, 600000, 0) ==
-           sht40_lpf_step_q8(12345, 0, 600000, 0));
-}
-
 static void test_temp_filter_efold_at_five_minutes(void) {
     int32_t q = sht40_q8_from_cc(2200);
     for (int i = 0; i < 30; i++) q = sht40_lpf_step_q8(q, 2300, 10000, 300000);
@@ -258,45 +251,6 @@ static void test_temp_filter_efold_at_five_minutes(void) {
 static void test_temp_filter_long_gap_lands_exactly(void) {
     assert(sht40_q8_to_cc(sht40_lpf_step_q8(sht40_q8_from_cc(2200), 2300,
                                             300000, 300000)) == 2300);
-}
-
-static void test_regime_step_fan_on_uses_tau_in(void) {
-    assert(sht40_airflow_regime_step_q8(0, true, 23, 10000, 600000, 1500000) ==
-           sht40_airflow_step_q8(0, 23, 10000, 600000));
-}
-
-static void test_regime_step_fan_off_uses_tau_out(void) {
-    const int32_t start = 23 << 8;
-    assert(sht40_airflow_regime_step_q8(start, false, 23, 10000, 600000, 1500000) ==
-           sht40_airflow_step_q8(start, 0, 10000, 1500000));
-}
-
-static void test_regime_step_asymmetry_direction(void) {
-    int32_t in_q = 0, out_q = 23 << 8;
-    for (int i = 0; i < 60; i++) {
-        in_q  = sht40_airflow_regime_step_q8(in_q,  true,  23, 10000, 600000, 1500000);
-        out_q = sht40_airflow_regime_step_q8(out_q, false, 23, 10000, 600000, 1500000);
-    }
-    const int32_t in_covered  = in_q;
-    const int32_t out_covered = (23 << 8) - out_q;
-    assert(in_covered > out_covered);
-    assert(out_q > (23 << 8) * 36 / 100);
-}
-
-static void test_offset_eff_air_composes(void) {
-    assert(sht40_offset_eff_air(286, false, 0, 23 << 8) == 263);
-    assert(sht40_offset_eff_air(286, false, 0, 0)       == 286);
-    assert(sht40_offset_eff_air(286, false, 0, 9813)    == 286 - 38);
-    assert(sht40_offset_eff_air(286, true, 50, 23 << 8) == 286 - 50 - 23);
-}
-
-static void test_offset_eff_air_matches_base_composition(void) {
-    for (int16_t base = -100; base <= 400; base += 50) {
-        assert(sht40_offset_eff_air(base, false, 0, 0) ==
-               sht40_offset_eff(base, false, 0));
-        assert(sht40_offset_eff_air(base, true, 60, 0) ==
-               sht40_offset_eff(base, true, 60));
-    }
 }
 
 int main(void) {
@@ -334,22 +288,16 @@ int main(void) {
     test_rh_cc_clamps_high();
     test_rh_cc_midscale();
     test_rh_cc_tracks_pct_within_one_percent();
-    test_airflow_blend_snaps_at_or_past_tau();
-    test_airflow_blend_first_step_fraction();
-    test_airflow_blend_efold_at_tau();
-    test_airflow_blend_step_is_tau_symmetric();
-    test_airflow_blend_converges_fully();
-    test_airflow_q8_rounds_to_nearest_cc();
+    test_lpf_snaps_at_or_past_tau();
+    test_lpf_first_step_fraction();
+    test_lpf_efold_at_tau();
+    test_lpf_step_is_tau_symmetric();
+    test_lpf_converges_fully();
+    test_q8_rounds_to_nearest_cc();
     test_q8_from_cc_round_trips_negative();
     test_lpf_step_toward_negative_target_lands();
-    test_lpf_is_the_airflow_primitive();
     test_temp_filter_efold_at_five_minutes();
     test_temp_filter_long_gap_lands_exactly();
-    test_regime_step_fan_on_uses_tau_in();
-    test_regime_step_fan_off_uses_tau_out();
-    test_regime_step_asymmetry_direction();
-    test_offset_eff_air_composes();
-    test_offset_eff_air_matches_base_composition();
     printf("sht40_convert: all tests passed\n");
     return 0;
 }

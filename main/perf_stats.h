@@ -11,8 +11,11 @@ extern "C" {
 
 #if CONFIG_SERIN_PERF_STATS
 void perf_stats_init(lv_display_t *disp);
+/* Called by the QSPI color-completion ISR, before releasing the draw buffer. */
+void perf_stats_transfer_done(void);
 #else
 static inline void perf_stats_init(lv_display_t *disp) { (void)disp; }
+static inline void perf_stats_transfer_done(void) {}
 #endif
 
 #ifdef __cplusplus
