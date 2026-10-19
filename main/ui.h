@@ -240,12 +240,6 @@ void        ui_set_on_ota_check(void (*cb)(void));
 void        ui_set_on_ota_confirm(void (*cb)(void));
 void        ui_set_on_ota_cancel(void (*cb)(void));
 
-#if CONFIG_SERIN_THERMAL_CAL
-typedef enum { UI_CAL_LIVE, UI_CAL_GLANCE, UI_CAL_CN105_OFF, UI_CAL_UNPAIRED }
-        ui_cal_face_t;
-void        ui_cal_take(bool take);
-void        ui_cal_face(ui_cal_face_t f);
-#endif
 
 #ifdef __cplusplus
 }

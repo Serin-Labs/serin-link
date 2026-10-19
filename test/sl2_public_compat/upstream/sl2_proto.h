@@ -1,0 +1,800 @@
+/*
+ * sl2_proto.h — Serin Link protocol wire format.
+ *
+ * Dependency-free C (stdint/stdbool/string/math only): shared byte-identical
+ * between every controller adapter and the Dial firmware. Little-endian packed
+ * structs ARE the wire format (encode/decode == memcpy). Spec:
+ * docs/serin-link-wire-spec.md (this repo).
+ *
+ * Growth discipline: additive changes only —
+ * claim a spare flag bit, then a reserved[] byte, then append after reserved[].
+ * Receivers gate on floor-era *_MIN_LEN (never sizeof) and decode tolerantly
+ * with sl2_decode_pkt(). Never insert or resize an existing field.
+ */
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <math.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SL2_PROTO_VERSION    5
+#define SL2_PROTO_MIN_COMPAT 1
+
+/* esp_now_set_pmk() input: a documented PUBLIC constant (16 bytes). It only
+ * wraps LMKs inside the radio driver; it is not a secret and not a trust
+ * anchor — pairing trust comes from Ed25519 signatures + TOFU pinning. */
+#define SL2_ESPNOW_PMK "serin-link-open\0"   /* 15 chars + NUL = 16 B */
+
+enum sl2_pkt_type {
+    SL2_PKT_STATE     = 1,   /* ctrl -> dial, encrypted */
+    SL2_PKT_CMD       = 2,   /* dial -> ctrl, encrypted */
+    SL2_PKT_PROBE     = 3,   /* dial -> ctrl, encrypted */
+    SL2_PKT_PAIR_REQ  = 4,   /* dial -> broadcast, signed plaintext */
+    SL2_PKT_PAIR_RESP = 5,   /* ctrl -> broadcast, signed plaintext */
+    SL2_PKT_CAPS      = 6,   /* ctrl -> dial, encrypted, pull (WANT_CAPS) */
+    SL2_PKT_INFO      = 7,   /* ctrl -> dial, encrypted, pull (WANT_INFO) */
+    SL2_PKT_WIFI_REQ  = 8,   /* dial -> ctrl, encrypted (Link OTA) */
+    SL2_PKT_WIFI_RESP = 9,   /* ctrl -> dial, encrypted (Link OTA) */
+    SL2_PKT_WIFI_SETUP = 10, /* dial -> ctrl, encrypted (raise setup AP) */
+    SL2_PKT_DIAL_INFO  = 11, /* dial -> ctrl, encrypted (dial identity) */
+    SL2_PKT_DIAL_SENSOR = 12, /* dial -> ctrl, encrypted (dial's own room sensor) */
+    SL2_PKT_ROOM_CATALOG_REQ = 13,
+    SL2_PKT_ROOM_CATALOG_RESP = 14,
+    SL2_PKT_ROOM_SOURCE_SET = 15,
+    SL2_PKT_ROOM_SOURCE_ACK = 16,
+    SL2_PKT_WIFI_CANCEL = 17,
+    SL2_PKT_WIFI_CANCEL_ACK = 18,
+    SL2_PKT_PAIR_CONFIRM = 19, /* dial -> ctrl, encrypted, LMK proof */
+    SL2_PKT_PAIR_ACK = 20,     /* ctrl -> dial, encrypted, LMK proof */
+    /* 21..127 reserved for core growth; 128..255 experiments, never shipped */
+};
+
+/* ── semantic HVAC model ──────────────────────────────────────────────── */
+
+enum sl2_mode {                 /* superset of ESPHome ClimateMode / HomeKit */
+    SL2_MODE_OFF       = 0,
+    SL2_MODE_HEAT      = 1,
+    SL2_MODE_COOL      = 2,
+    SL2_MODE_HEAT_COOL = 3,     /* dual setpoint: set_low_dc / set_high_dc */
+    SL2_MODE_AUTO      = 4,     /* single-setpoint vendor auto */
+    SL2_MODE_DRY       = 5,
+    SL2_MODE_FAN_ONLY  = 6,
+    /* 7..15 reserved — CAPS.modes mask is u16 */
+};
+
+enum sl2_action {               /* what the equipment is DOING right now */
+    SL2_ACT_UNKNOWN = 0, SL2_ACT_IDLE    = 1, SL2_ACT_HEATING = 2,
+    SL2_ACT_COOLING = 3, SL2_ACT_DRYING  = 4, SL2_ACT_FAN     = 5,
+    SL2_ACT_DEFROST = 6, SL2_ACT_PREHEAT = 7, SL2_ACT_STANDBY = 8,
+};
+
+enum sl2_preset {               /* ESPHome preset superset; 0 = none */
+    SL2_PRESET_NONE = 0, SL2_PRESET_ECO     = 1, SL2_PRESET_AWAY  = 2,
+    SL2_PRESET_BOOST = 3, SL2_PRESET_COMFORT = 4, SL2_PRESET_HOME = 5,
+    SL2_PRESET_SLEEP = 6, SL2_PRESET_ACTIVITY = 7,
+    /* 8..15 reserved — CAPS.presets mask is u16 */
+};
+
+/* fan: 0 = auto, 1..100 = percent (dial sends canonical detent percents,
+ * controller quantises to its own steps). vane per axis: 0 = auto,
+ * 1..n_pos = positions (1 = most horizontal/left), 255 = swing. */
+#define SL2_FAN_AUTO   0
+#define SL2_VANE_AUTO  0
+#define SL2_VANE_SWING 255
+
+#define SL2_DC_NA      ((int16_t)0x7FFF)   /* "no value" for optional temps */
+#define SL2_HUM_NA     ((uint8_t)0xFF)     /* "no value" for humidity fields */
+#define SL2_CC_NA      ((int16_t)0x7FFF)   /* "no value" for centi-C temps */
+#define SL2_HUM_CC_NA  ((uint16_t)0xFFFF)  /* "no value" for centi-% humidity */
+/* NB SL2_HUM_NA (0xFF) and SL2_HUM_CC_NA (0xFFFF) mean the same thing in
+ * different units and now coexist. SL2_HUM_NA is for sl2_state_pkt's
+ * room_hum_pct / hum_set_pct; SL2_HUM_CC_NA is ONLY for sl2_dial_sensor_pkt.
+ * A mixed-up sentinel compares false forever and reads as "never reports". */
+
+/* ── STATE (ctrl -> dial) ─────────────────────────────────────────────── */
+
+enum {  /* sl2_state_pkt.flags */
+    SL2_SF_HVAC_LINK    = 1u << 0,   /* controller <-> heat pump link up */
+    SL2_SF_WIFI         = 1u << 1,   /* controller STA associated */
+    SL2_SF_USE_F        = 1u << 2,   /* display pref, per controller */
+    SL2_SF_WIFI_PROVISIONED = 1u << 3, /* controller has stored STA creds
+                                        * (drives the dial's Wi-Fi setup face;
+                                        * always-on for YAML-provisioned fw) */
+    SL2_SF_SETUP_AP     = 1u << 4,   /* recovery/setup hotspot currently active */
+    SL2_SF_WIFI_ERR     = 1u << 5,   /* last credential change failed to join;
+                                      * latched until the next successful join
+                                      * or the next setup window (see spec 10b) */
+    /* bits 6-7 spare */
+};
+enum {  /* sl2_state_pkt.flags2 */
+    SL2_SF2_SENSOR_BATT_LOW = 1u << 0,
+    /* Remote screen gate (HA presence switch on the controller). Two bits so a
+     * zero-filled legacy/unconfigured sender reads as "no gate declared" and
+     * the dial keeps its own idle behavior — one bit couldn't tell "no gate"
+     * from "gate on". CTL set: OFF clear = someone present (dial never sleeps
+     * darker than glance); OFF set = room empty (dial sleeps at its dim
+     * threshold and re-sleeps after local wakes). */
+    SL2_SF2_SCREEN_CTL      = 1u << 1,
+    SL2_SF2_SCREEN_OFF      = 1u << 2,
+    /* Sun-down gate: the sender computes solar elevation from its UTC clock
+     * + configured lat/long and reports the FACT "sun below civil twilight
+     * (< -6 deg)". Policy (whether/how much to dim) stays on the dial. Two
+     * bits for the same reason as the screen gate above: a zero-filled
+     * legacy/unclocked/unlocated sender must read as "no gate computed",
+     * which one bit couldn't say. */
+    SL2_SF2_NIGHT_CTL       = 1u << 3,
+    SL2_SF2_NIGHT           = 1u << 4,
+    /* bits 5-7 spare */
+};
+
+struct __attribute__((packed)) sl2_state_pkt {
+    uint8_t  type;          /* SL2_PKT_STATE */
+    uint8_t  version;       /* SL2_PROTO_VERSION */
+    uint8_t  caps_seq;      /* bumps when CAPS content changes -> dial re-pulls */
+    uint8_t  flags;         /* SL2_SF_* */
+    uint8_t  mode;          /* enum sl2_mode */
+    uint8_t  action;        /* enum sl2_action */
+    uint8_t  fan;           /* 0=auto, 1..100 */
+    uint8_t  vane_v;        /* 0=auto, 1..n, 255=swing; 0 if axis absent */
+    uint8_t  vane_h;
+    uint8_t  preset;        /* enum sl2_preset; 0 = none */
+    uint16_t fault;         /* 0 = normal; else vendor fault code */
+    int16_t  room_dc;       /* deci-C */
+    int16_t  set_dc;        /* single-setpoint modes */
+    int16_t  set_low_dc;    /* HEAT_COOL band; SL2_DC_NA when n/a */
+    int16_t  set_high_dc;   /* HEAT_COOL band; SL2_DC_NA when n/a */
+    uint8_t  room_hum_pct;  /* 0..100; SL2_HUM_NA = not reported */
+    uint8_t  hum_set_pct;   /* 0..100; SL2_HUM_NA = n/a */
+    uint8_t  flags2;        /* SL2_SF2_* */
+    uint8_t  night_ceil;    /* night wake-brightness ceiling %, 1..100; 0 =
+                             * none declared (legacy zero-fill, or the sender
+                             * has no opinion) -> receiver uses its default.
+                             * Only meaningful under SL2_SF2_NIGHT_CTL; was
+                             * the reserved[1] byte, claimed per the growth
+                             * policy above. */
+    uint16_t epoch;         /* random per-boot replay token; 0 = sender has no
+                             * epoch support. Dials echo the latest value in
+                             * CMD/WIFI_SETUP (spec 3b). */
+};
+#define SL2_STATE_MIN_LEN 26
+
+/* ── CMD (dial -> ctrl) ───────────────────────────────────────────────── */
+
+enum {  /* sl2_cmd_pkt.mask */
+    SL2_CM_MODE      = 1u << 0,
+    SL2_CM_TEMP      = 1u << 1,
+    SL2_CM_TEMP_BAND = 1u << 2,
+    SL2_CM_FAN       = 1u << 3,
+    SL2_CM_VANEV     = 1u << 4,
+    SL2_CM_VANEH     = 1u << 5,
+    SL2_CM_PRESET    = 1u << 6,
+    SL2_CM_HUM       = 1u << 7,
+    SL2_CM_UNITS     = 1u << 8,
+    /* bits 9-15 spare */
+};
+
+struct __attribute__((packed)) sl2_cmd_pkt {
+    uint8_t  type;          /* SL2_PKT_CMD */
+    uint8_t  version;       /* SL2_PROTO_VERSION */
+    uint16_t mask;          /* SL2_CM_*; apply masked fields only */
+    uint8_t  mode;
+    uint8_t  fan;
+    uint8_t  vane_v;
+    uint8_t  vane_h;
+    uint8_t  preset;
+    int16_t  set_dc;
+    int16_t  set_low_dc;
+    int16_t  set_high_dc;
+    uint8_t  hum_set_pct;
+    uint8_t  use_f;         /* SL2_CM_UNITS: 0/1 display pref */
+    uint16_t epoch;         /* echo of the latest STATE.epoch; 0 = legacy dial.
+                             * Odd wire offset (17) — packed access / memcpy
+                             * only, like every field here. */
+};
+#define SL2_CMD_MIN_LEN 19
+
+/* ── PROBE (dial -> ctrl) ─────────────────────────────────────────────── */
+
+enum {  /* sl2_probe_pkt.want */
+    SL2_WANT_INFO  = 1u << 0,
+    SL2_WANT_CAPS  = 1u << 1,
+    SL2_WANT_STATE = 1u << 2,  /* dial lacks a fresh STATE (zone switch/resync).
+                                * Without this bit a controller that already
+                                * considers the dial live (kept so by background
+                                * keepalive probes) has no reason to send STATE
+                                * before its 10 s heartbeat — the dial's sync
+                                * watchdog then misreads the wait as link loss.
+                                * Unknown bits are ignored, so mixed versions
+                                * degrade to the old heartbeat-paced behavior. */
+    /* bits 3-7 spare */
+};
+
+struct __attribute__((packed)) sl2_probe_pkt {
+    uint8_t type;           /* SL2_PKT_PROBE */
+    uint8_t version;        /* SL2_PROTO_VERSION */
+    uint8_t want;           /* SL2_WANT_* pull gates */
+    uint8_t reserved[1];    /* senders zero-fill, receivers ignore */
+};
+#define SL2_PROBE_MIN_LEN 3   /* want must be present; reserved may be absent */
+
+/* ── Pairing (broadcast, plaintext, Ed25519-signed) ───────────────────── */
+
+struct __attribute__((packed)) sl2_pair_req_pkt {
+    uint8_t type;           /* SL2_PKT_PAIR_REQ */
+    uint8_t version;        /* SL2_PROTO_VERSION */
+    uint8_t src_mac[6];     /* dial STA MAC */
+    uint8_t eph_pub[32];    /* fresh X25519 ephemeral, per attempt */
+    uint8_t id_pub[32];     /* dial long-lived Ed25519 identity */
+    uint8_t sig[64];        /* Ed25519(dial_id_priv, req transcript) */
+    uint8_t reserved[1];
+};
+
+struct __attribute__((packed)) sl2_pair_resp_pkt {
+    uint8_t type;           /* SL2_PKT_PAIR_RESP */
+    uint8_t version;        /* SL2_PROTO_VERSION */
+    uint8_t src_mac[6];     /* controller STA MAC */
+    uint8_t eph_pub[32];    /* fresh X25519 ephemeral */
+    uint8_t id_pub[32];     /* controller long-lived Ed25519 identity */
+    uint8_t sig[64];        /* Ed25519(ctrl_id_priv, resp transcript) */
+    uint8_t channel;        /* controller's live channel (1..13; 0 = unknown).
+                             * Broadcasts bleed across adjacent channels at
+                             * close range, so the sweep can catch this RESP
+                             * one channel off — unicast then never ACKs. The
+                             * dial retunes here before its confirm probes.
+                             * SIGNED (in the transcript): a relayed copy with
+                             * a doctored channel fails verification. */
+};
+#define SL2_PAIR_MIN_LEN 136   /* through sig[]; channel may be absent */
+
+/* New/re-pairing requires v5 on both peers; old bonds still carry traffic.
+ * Ordinary decrypted frames cannot confirm: they may predate a queued rekey. */
+#define SL2_PAIR_AUTH_MIN_VER 5
+struct __attribute__((packed)) sl2_pair_auth_pkt {
+    uint8_t type;           /* SL2_PKT_PAIR_CONFIRM or SL2_PKT_PAIR_ACK */
+    uint8_t version;
+    uint8_t tag[32];        /* HMAC-SHA256(candidate LMK, domain + roles/MACs) */
+};
+#define SL2_PAIR_AUTH_MIN_LEN 34
+
+/* Signed transcripts, domain-separated. Layouts are wire-frozen. */
+#define SL2_REQ_TRANSCRIPT_LEN  (8 + 2 + 6 + 32 + 32)            /* 80 */
+#define SL2_RESP_TRANSCRIPT_LEN (9 + 2 + 6 + 32 + 32 + 32 + 1)   /* 114 */
+
+static inline size_t sl2_pair_req_transcript(const struct sl2_pair_req_pkt *p,
+                                             uint8_t out[SL2_REQ_TRANSCRIPT_LEN]) {
+    memcpy(out, "SLv2-req", 8);
+    out[8] = p->type; out[9] = p->version;
+    memcpy(out + 10, p->src_mac, 6);
+    memcpy(out + 16, p->eph_pub, 32);
+    memcpy(out + 48, p->id_pub, 32);
+    return SL2_REQ_TRANSCRIPT_LEN;
+}
+
+/* dial_eph_pub binds the response to THIS request. */
+static inline size_t sl2_pair_resp_transcript(const struct sl2_pair_resp_pkt *p,
+                                              const uint8_t dial_eph_pub[32],
+                                              uint8_t out[SL2_RESP_TRANSCRIPT_LEN]) {
+    memcpy(out, "SLv2-resp", 9);
+    out[9] = p->type; out[10] = p->version;
+    memcpy(out + 11, p->src_mac, 6);
+    memcpy(out + 17, p->eph_pub, 32);
+    memcpy(out + 49, p->id_pub, 32);
+    memcpy(out + 81, dial_eph_pub, 32);
+    out[113] = p->channel;
+    return SL2_RESP_TRANSCRIPT_LEN;
+}
+
+/* HKDF inputs for the LMK — same on both ends. */
+#define SL2_LMK_INFO      "serin-link-v2-lmk"
+#define SL2_LMK_INFO_LEN  17
+static inline void sl2_lmk_salt(const uint8_t dial_eph_pub[32],
+                                const uint8_t ctrl_eph_pub[32], uint8_t out[64]) {
+    memcpy(out, dial_eph_pub, 32);
+    memcpy(out + 32, ctrl_eph_pub, 32);
+}
+
+/* ── CAPS (ctrl -> dial, pull via WANT_CAPS) ──────────────────────────── */
+
+enum {  /* sl2_caps_pkt.caps_flags — control capabilities */
+    SL2_CF_HUM_CTRL = 1u << 0,   /* accepts SL2_CM_HUM */
+    /* bits 1-7 spare */
+};
+enum {  /* sl2_caps_pkt.features — telemetry/services the controller offers */
+    SL2_FEAT_WIFI_INFO      = 1u << 0,
+    SL2_FEAT_HOMEKIT        = 1u << 1,
+    SL2_FEAT_OUTSIDE_T      = 1u << 2,
+    SL2_FEAT_COMPRESSOR     = 1u << 3,
+    SL2_FEAT_SENSOR_BATT    = 1u << 4,
+    SL2_FEAT_FW_INFO        = 1u << 5,
+    SL2_FEAT_RUNTIME        = 1u << 6,
+    SL2_FEAT_LINK_OTA_CREDS = 1u << 7,
+    SL2_FEAT_ENERGY         = 1u << 8,
+    SL2_FEAT_WIFI_SETUP     = 1u << 9,  /* accepts WIFI_SETUP (on-demand setup AP) */
+    SL2_FEAT_LINK_SENSOR    = 1u << 10, /* accepts DIAL_SENSOR as a room source */
+    SL2_FEAT_SCREEN         = 1u << 11, /* runs a screen gate (SL2_SF2_SCREEN_*)
+                                         * and wants SL2_DSF_SCREEN_* status back */
+    SL2_FEAT_ROOM_CATALOG   = 1u << 12, /* named room-source catalog + selection */
+    SL2_FEAT_WIFI_SETUP_CANCEL = 1u << 13, /* session-scoped setup cancellation */
+    /* bits 13-15 spare */
+};
+
+/* vane axis descriptor byte: low nibble = n_pos (0 = axis absent),
+ * bit4 = supports auto, bit5 = supports swing, bit6 = SPLIT_TOP (below).
+ * bit7 spare. */
+#define SL2_VANECAP(n_pos, has_auto, has_swing) \
+    (uint8_t)(((n_pos) & 0x0F) | ((has_auto) ? 0x10 : 0) | ((has_swing) ? 0x20 : 0))
+
+/* OR into SL2_VANECAP(): the TOP position (n_pos) is a vendor "split/wide"
+ * PSEUDO-position, not an angle in the axis's physical travel.
+ *
+ * Mitsubishi's horizontal vane reports 6 to mean "split" — louvres fanned
+ * apart — and a receiver that draws it as a sixth angle is simply wrong. Until
+ * this bit existed the wire could not say so: SL2_VANECAP(6, ...) meant "six
+ * angles" to one adapter and "five angles plus split" to another, and each end
+ * carried its own private 6. Senders that predate the bit are read by the
+ * legacy rule below, so declaring it is an improvement, never a requirement. */
+#define SL2_VANECAP_SPLIT_TOP 0x40
+
+/* The position a pre-SPLIT_TOP sender means by "split". Only ever consulted
+ * when the bit is absent AND the axis declares at least this many positions —
+ * every shipping head with a split is the Mitsubishi horizontal axis. */
+#define SL2_VANE_SPLIT_LEGACY 6
+
+static inline uint8_t sl2_vanecap_npos(uint8_t v)      { return v & 0x0F; }
+static inline bool    sl2_vanecap_has_auto(uint8_t v)  { return (v & 0x10) != 0; }
+static inline bool    sl2_vanecap_has_swing(uint8_t v) { return (v & 0x20) != 0; }
+static inline bool    sl2_vanecap_split_top(uint8_t v) {
+    return (v & SL2_VANECAP_SPLIT_TOP) != 0;
+}
+
+/* The wire position that means "split" on this axis, or 0 when it has none.
+ * One rule, shared by every adapter, so the magic 6 lives here and nowhere
+ * else. */
+static inline uint8_t sl2_vanecap_split_pos(uint8_t v) {
+    uint8_t n = sl2_vanecap_npos(v);
+    if (sl2_vanecap_split_top(v)) return n;
+    return n >= SL2_VANE_SPLIT_LEGACY ? SL2_VANE_SPLIT_LEGACY : 0;
+}
+
+struct __attribute__((packed)) sl2_caps_pkt {
+    uint8_t  type;           /* SL2_PKT_CAPS */
+    uint8_t  version;        /* SL2_PROTO_VERSION */
+    uint8_t  caps_seq;       /* generation; STATE echoes it */
+    uint8_t  caps_flags;     /* SL2_CF_* */
+    uint16_t modes;          /* bit N = sl2_mode N supported (incl. OFF) */
+    uint16_t presets;        /* bit N = sl2_preset N supported (bit 0 unused) */
+    uint8_t  fan_steps;      /* 0 = fan not controllable; N = discrete steps */
+    uint8_t  fan_flags;      /* bit0 = has auto; bits 1-7 spare */
+    uint8_t  vane_v;         /* SL2_VANECAP() */
+    uint8_t  vane_h;
+    int16_t  set_min_dc;     /* setpoint range (also bounds the band) */
+    int16_t  set_max_dc;
+    uint8_t  set_step_dc;    /* deci-C: 5 = 0.5C, 10 = 1C */
+    uint8_t  ftab_id;        /* 0 = linear, 1 = Mitsubishi 61-88F table */
+    uint8_t  band_min_gap_dc;/* HEAT_COOL: min high-low separation; 0 = none */
+    uint8_t  hum_step_pct;   /* target-humidity step; 0 = n/a */
+    uint16_t features;       /* SL2_FEAT_* */
+    char     name[32];       /* zone name, NUL-terminated; empty = unnamed */
+    uint8_t  reserved[14];   /* senders zero-fill, receivers ignore */
+};
+#define SL2_CAPS_MIN_LEN 54   /* through name[]; reserved may be absent */
+#define SL2_FAN_HAS_AUTO (1u << 0)
+
+/* ── INFO (ctrl -> dial, pull via WANT_INFO): TLV stream ──────────────── */
+
+struct __attribute__((packed)) sl2_info_pkt {
+    uint8_t type;            /* SL2_PKT_INFO */
+    uint8_t version;         /* SL2_PROTO_VERSION */
+    uint8_t reserved[2];
+    /* then TLVs back-to-back: u8 t; u8 l; u8 v[l]; ... */
+};
+#define SL2_INFO_HDR_LEN 4
+
+enum sl2_tlv_type {          /* 0x01..0x7F core; 0x80..0xFF vendor-specific */
+    SL2_TLV_WIFI_INFO   = 0x01,  /* i8 rssi; u8 channel; str ssid; str ip (NUL-joined) */
+    SL2_TLV_HOMEKIT     = 0x02,  /* u8 paired; str code; str payload (NUL-joined) */
+    SL2_TLV_OUTSIDE_T   = 0x03,  /* i16 outside_dc */
+    SL2_TLV_COMPRESSOR  = 0x04,  /* u8 hz; u8 stage; u8 vendor_sub; u8 vendor_auto_sub */
+    SL2_TLV_SENSOR_BATT = 0x05,  /* u8 pct */
+    SL2_TLV_FW_INFO     = 0x06,  /* str version; str build_date (NUL-joined) */
+    SL2_TLV_RUNTIME     = 0x07,  /* u32 hours */
+    SL2_TLV_SYS         = 0x08,  /* u32 uptime_s; u8 reset_reason */
+    SL2_TLV_ENERGY      = 0x09,  /* u16 input_w (0xFFFF n/a); u32 wh_total (0xFFFFFFFF n/a) */
+    SL2_TLV_DIAL_CERT   = 0x0A,  /* DIAL_INFO tail only: raw 112 B link_cert
+                                  * (Serin-signed device identity); absent on
+                                  * unprovisioned dials */
+    SL2_TLV_ROOM_SRC    = 0x0B,  /* u8 applied_src; u8 status */
+    SL2_TLV_ROOM_SOURCE_V2 = 0x0C, /* u32 revision; u64 source_id; u8 status */
+};
+
+/* Append one TLV. Returns false (and writes nothing) if it doesn't fit. */
+static inline bool sl2_tlv_put(uint8_t *buf, size_t cap, size_t *off,
+                               uint8_t t, const void *v, uint8_t l) {
+    if (*off + 2 + (size_t)l > cap) return false;
+    buf[*off] = t; buf[*off + 1] = l;
+    if (l) memcpy(buf + *off + 2, v, l);
+    *off += 2 + (size_t)l;
+    return true;
+}
+
+/* Iterate TLVs in buf[0..len). Start with *off = 0. Returns false at end or
+ * on a truncated TLV (which also ends iteration — never reads past len). */
+static inline bool sl2_tlv_next(const uint8_t *buf, size_t len, size_t *off,
+                                uint8_t *t, uint8_t *l, const uint8_t **v) {
+    if (*off + 2 > len) return false;
+    uint8_t tt = buf[*off], ll = buf[*off + 1];
+    if (*off + 2 + (size_t)ll > len) return false;
+    *t = tt; *l = ll; *v = buf + *off + 2;
+    *off += 2 + (size_t)ll;
+    return true;
+}
+
+/* ── controller-defined room-temperature source catalog (v4) ───────── */
+/* Well-known ids occupy namespace 0. Namespaces 1 and 2 are a u8 tag in the
+ * high byte with a 6-byte MAC below it. Namespace 4 is a u8 tag with a 56-bit
+ * FNV-1a of a display name below it (YAML-declared external sources — no
+ * MAC to derive from). Ids 2..0xFF in namespace 0 and namespaces 5..255 are
+ * reserved for core growth. Not every controller produces every id — the
+ * ESPHome adapter emits Internal/External/Link, the HomeKit adopter also
+ * emits Average and NS_SENSOR entries.
+ *
+ * Namespace 3 (automatic "last reporting Link wins") is RETIRED as of
+ * 2026-09-05: no controller lists it and a ROOM_SOURCE_SET naming it is
+ * answered SL2_ROOM_SET_BAD_SOURCE. The constants stay so every vendored copy
+ * of this header remains identical and old stores can be recognised and
+ * migrated. */
+#define SL2_ROOM_SOURCE_INTERNAL_ID UINT64_C(0)
+#define SL2_ROOM_SOURCE_AVERAGE_ID UINT64_C(1)
+#define SL2_ROOM_SOURCE_NS_LINK 1u
+#define SL2_ROOM_SOURCE_NS_SENSOR 2u
+#define SL2_ROOM_SOURCE_NS_LINK_AUTO 3u   /* retired, see above */
+#define SL2_ROOM_SOURCE_NS_EXTERNAL 4u
+#define SL2_ROOM_SOURCE_LINK_AUTO_ID \
+    ((uint64_t) SL2_ROOM_SOURCE_NS_LINK_AUTO << 56)   /* retired, see above */
+#define SL2_ROOM_SOURCE_NAME_LEN 24
+#define SL2_ROOM_CATALOG_DONE UINT16_C(0xFFFF)
+#define SL2_ROOM_CATALOG_PAGE_MAX 7
+
+static inline uint64_t sl2_room_source_mac_id(uint8_t ns, const uint8_t mac[6]) {
+    uint64_t id = (uint64_t) ns << 56;
+    for (int i = 0; i < 6; i++) id |= (uint64_t) mac[i] << (40 - i * 8);
+    return id;
+}
+
+/* Exact inverse of sl2_room_source_mac_id for one namespace. True (and fills
+ * mac) only when `id` is a MAC-derived id in `ns`. This is what lets a
+ * controller keep the id as its ONLY stored copy of the selection and recover
+ * the MAC on demand, instead of persisting the two separately and keeping
+ * them in step by hand. */
+static inline bool sl2_room_source_id_mac(uint64_t id, uint8_t ns,
+                                          uint8_t mac[6]) {
+    if ((uint8_t)(id >> 56) != ns) return false;
+    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)(id >> (40 - i * 8));
+    return true;
+}
+
+/* Id for a source that has a NAME but no MAC (YAML-declared external
+ * sources). FNV-1a 64 over the UTF-8 bytes, low 56 bits kept, namespace in
+ * the top byte. Codegen computes the same function to reject colliding
+ * names before they reach the wire; renaming a source therefore changes its
+ * id, which the controller treats exactly like removing it. */
+static inline uint64_t sl2_room_source_name_id(uint8_t ns, const char *name) {
+    uint64_t h = UINT64_C(0xcbf29ce484222325);
+    for (const unsigned char *p = (const unsigned char *) name; *p; p++) {
+        h ^= *p;
+        h *= UINT64_C(0x100000001b3);
+    }
+    return ((uint64_t) ns << 56) | (h & ((UINT64_C(1) << 56) - 1));
+}
+
+enum sl2_room_source_kind {
+    SL2_ROOM_KIND_INTERNAL = 0, SL2_ROOM_KIND_SENSOR = 1,
+    SL2_ROOM_KIND_LINK = 2, SL2_ROOM_KIND_AUTO = 3, /* AUTO retired 2026-09-05; value kept */
+    SL2_ROOM_KIND_AGGREGATE = 4,
+};
+enum { SL2_ROOM_SOURCE_F_SELECTABLE = 1u << 0 };
+
+struct __attribute__((packed)) sl2_room_source_entry {
+    uint64_t id;
+    uint8_t kind, flags;
+    char name[SL2_ROOM_SOURCE_NAME_LEN];
+};
+struct __attribute__((packed)) sl2_room_catalog_req_pkt {
+    uint8_t type, version;
+    uint16_t cursor;
+    uint32_t known_revision;
+};
+struct __attribute__((packed)) sl2_room_catalog_resp_pkt {
+    uint8_t type, version, count, flags;
+    uint16_t next_cursor, reserved;
+    uint32_t revision;
+    struct sl2_room_source_entry entries[SL2_ROOM_CATALOG_PAGE_MAX];
+};
+#define SL2_ROOM_CATALOG_RESP_HDR_LEN 12
+struct __attribute__((packed)) sl2_room_source_set_pkt {
+    uint8_t type, version, request_id, reserved;
+    uint32_t revision;
+    uint64_t source_id;
+    uint16_t epoch;          /* v5: latest STATE.epoch */
+};
+#define SL2_ROOM_SOURCE_SET_MIN_LEN 16
+#define SL2_ROOM_EPOCH_MIN_VER 5
+enum sl2_room_source_result {
+    SL2_ROOM_SET_OK = 0, SL2_ROOM_SET_BAD_SOURCE = 1,
+    SL2_ROOM_SET_STALE_CATALOG = 2, SL2_ROOM_SET_UNSUPPORTED = 3,
+};
+struct __attribute__((packed)) sl2_room_source_ack_pkt {
+    uint8_t type, version, request_id, result;
+    uint32_t revision;
+    uint64_t source_id;
+    uint8_t status, reserved[3];
+};
+struct __attribute__((packed)) sl2_room_source_v2 {
+    uint32_t revision;
+    uint64_t source_id;
+    uint8_t status;
+};
+/* The matching put helper lives in sl2_info.h with the other INFO
+ * builders, which write multi-byte fields little-endian by hand. */
+
+/* ── Link OTA credential relay ────────────────────────────────────────── */
+
+struct __attribute__((packed)) sl2_wifi_req_pkt {
+    uint8_t type;            /* SL2_PKT_WIFI_REQ */
+    uint8_t version;         /* SL2_PROTO_VERSION */
+    uint8_t reserved[2];
+};
+#define SL2_WIFI_REQ_MIN_LEN 4
+
+struct __attribute__((packed)) sl2_wifi_resp_pkt {
+    uint8_t type;            /* SL2_PKT_WIFI_RESP */
+    uint8_t version;         /* SL2_PROTO_VERSION */
+    uint8_t ok;              /* 0 = no creds stored */
+    char    ssid[33];        /* NUL-terminated */
+    char    psk[65];         /* NUL-terminated; empty = open network */
+    uint8_t reserved[2];
+};
+#define SL2_WIFI_RESP_MIN_LEN 103
+
+/* ── dial-initiated Wi-Fi setup ───────────────────────────────────────── */
+
+/* Ask the controller to raise its recovery/setup hotspot NOW (the dial's
+ * change-network flow). No response packet — the controller reports the
+ * hotspot via SL2_SF_SETUP_AP in STATE, and a flag flip re-sends STATE within
+ * SL2_STATE_MIN_INTERVAL_MS. Senders re-fire ~1 Hz until they see the flag
+ * (ESP-NOW is lossy); receivers must treat it as idempotent. Gated on
+ * SL2_FEAT_WIFI_SETUP in CAPS. */
+struct __attribute__((packed)) sl2_wifi_setup_pkt {
+    uint8_t  type;           /* SL2_PKT_WIFI_SETUP */
+    uint8_t  version;        /* SL2_PROTO_VERSION */
+    uint16_t epoch;          /* echo of the latest STATE.epoch; 0 = legacy dial */
+};
+#define SL2_WIFI_SETUP_MIN_LEN 4
+
+/* Capability-gated extension; preserve the legacy four-byte struct above.
+ * session is nonzero, opaque, and constant across one wizard's retries. */
+struct __attribute__((packed)) sl2_wifi_setup_session_pkt {
+    uint8_t type, version;
+    uint16_t epoch;
+    uint32_t session;
+};
+#define SL2_WIFI_SETUP_SESSION_MIN_LEN 8
+
+struct __attribute__((packed)) sl2_wifi_cancel_pkt {
+    uint8_t type, version;
+    uint16_t epoch;
+    uint32_t session;
+};
+#define SL2_WIFI_CANCEL_MIN_LEN 8
+
+enum sl2_wifi_cancel_status {
+    SL2_WIFI_CANCEL_CLOSED = 0,
+    SL2_WIFI_CANCEL_WAITING = 1,
+    SL2_WIFI_CANCEL_RECOVERY = 2,
+    SL2_WIFI_CANCEL_STALE = 3,
+    SL2_WIFI_CANCEL_UNSUPPORTED = 4,
+};
+struct __attribute__((packed)) sl2_wifi_cancel_ack_pkt {
+    uint8_t type, version;
+    uint32_t session;
+    uint8_t status;
+};
+#define SL2_WIFI_CANCEL_ACK_MIN_LEN 7
+
+/* ── DIAL_INFO (dial -> ctrl, encrypted, push) ────────────────────────────
+ * The dial reports its own identity so the unit's UI can show which Link is
+ * paired. Sent on connect, on caps_seq change, and ~every 60 s. model/fw are
+ * dial-authored branded strings; caps_seq is the dial's currently-applied
+ * generation (unit compares against its own to show a "syncing" hint).
+ *
+ * Bytes past the fixed struct are an optional TLV tail (same framing as
+ * INFO). SL2's tolerant decode copies min(len, sizeof) — floor-era
+ * receivers drop the tail unread, so appending TLVs is compatible by
+ * construction. Today: SL2_TLV_DIAL_CERT. */
+struct __attribute__((packed)) sl2_dial_info_pkt {
+    uint8_t type;            /* SL2_PKT_DIAL_INFO */
+    uint8_t version;         /* SL2_PROTO_VERSION */
+    uint8_t caps_seq;        /* the caps_seq the dial currently has applied */
+    char    model[24];       /* branded model, NUL-terminated */
+    char    fw[16];          /* firmware version, NUL-terminated */
+};
+#define SL2_DIAL_INFO_MIN_LEN 3   /* through caps_seq; model/fw may be absent */
+
+/* ── DIAL_SENSOR (dial -> ctrl, encrypted, push) ──────────────────────────
+ *
+ * A dial with its own temperature sensor offers itself as a room-temperature
+ * source. The dial only ever REPORTS; the controller decides whether to use
+ * the reading (see SL2_TLV_ROOM_SRC for what it decided).
+ *
+ * `want_src` doubles as the edit channel so streaming and editing share one
+ * message type. It is idempotent — the dial re-sends until the controller's
+ * INFO reflects the change, exactly as it treats CMD.
+ *
+ * SL2_ROOMSRC_NOEDIT is 0xFF, not 0, on purpose: the tolerant decode
+ * zero-fills a short frame, and 0 means Internal. A receiver must treat
+ * len < 8 as reading-only by LENGTH, never by value (want_src sits at
+ * offset 7 now that hum_cc widened to 16 bits). */
+enum {  /* sl2_dial_sensor_pkt.flags */
+    SL2_DSF_HAS_SENSOR = 1u << 0,  /* dial has sensing hardware (reading may
+                                    * still be absent — see temp_cc) */
+    /* Screen status report, gated on SL2_FEAT_SCREEN in CAPS. VALID+ON is the
+     * same two-bit scheme as SL2_SF2_SCREEN_*: a zero-filled legacy dial reads
+     * as "does not report", never as "screen off". ON covers every lit state
+     * (dimmed and the glance face included); only display-sleep clears it. */
+    SL2_DSF_SCREEN_VALID = 1u << 1,
+    SL2_DSF_SCREEN_ON    = 1u << 2,
+    /* bits 3-7 spare */
+};
+
+enum sl2_room_src {
+    SL2_ROOMSRC_INTERNAL = 0,     /* heat pump's own thermistor */
+    SL2_ROOMSRC_BLE      = 1,     /* controller's BLE sensor */
+    SL2_ROOMSRC_LINK     = 2,     /* the dial's own sensor */
+    SL2_ROOMSRC_NOEDIT   = 0xFF,  /* want_src sentinel: not an edit */
+};
+
+enum sl2_room_status {
+    SL2_ROOMST_OK          = 0,   /* the selected source is feeding now */
+    SL2_ROOMST_STALE       = 1,   /* selected but timed out -> internal */
+    SL2_ROOMST_UNAVAILABLE = 2,   /* selected but never had a reading */
+};
+
+struct __attribute__((packed)) sl2_dial_sensor_pkt {
+    uint8_t  type;           /* SL2_PKT_DIAL_SENSOR */
+    uint8_t  version;        /* SL2_PROTO_VERSION; < 3 means deci fields — reject */
+    uint8_t  flags;          /* SL2_DSF_* */
+    int16_t  temp_cc;        /* centi-C; SL2_CC_NA = no reading */
+    uint16_t hum_cc;         /* centi-%, 0..10000; SL2_HUM_CC_NA = no reading */
+    uint8_t  want_src;       /* enum sl2_room_src; NOEDIT = reading only */
+    uint8_t  reserved[1];    /* senders zero-fill, receivers ignore */
+    uint16_t epoch;          /* v5: latest STATE.epoch */
+};
+#define SL2_DIAL_SENSOR_MIN_LEN 7   /* through hum_cc; want_src may be absent */
+/* The first version whose DIAL_SENSOR temp/hum fields are centi (v2 and
+ * earlier were deci, at the same packet size — see the version comment on
+ * sl2_dial_sensor_pkt.version above). A fixed historical fact, NOT an alias
+ * for SL2_PROTO_VERSION: that constant moves at the next protocol bump, and
+ * if this one moved with it the version gate in sl2_link.c would silently
+ * stop rejecting the v2-era frames it exists to reject. Do not "simplify"
+ * this back to SL2_PROTO_VERSION. */
+#define SL2_DIAL_SENSOR_MIN_VER 3
+
+/* Same discipline for the v4 room-source family (ROOM_CATALOG_REQ/RESP,
+ * ROOM_SOURCE_SET/ACK): a fixed historical floor, not an alias for
+ * SL2_PROTO_VERSION. These types did not exist before v4, so nothing legitimate
+ * sends them at a lower version — and if a v4 field is ever rescaled in place
+ * the way DIAL_SENSOR's was, this is the constant that gate keys off. */
+#define SL2_ROOM_CATALOG_MIN_VER 4
+
+/* ── sizeof guards — every vendored copy must agree ───────────────────── */
+#define SL2_STATIC_ASSERT(c, m) typedef char sl2_sa_##m[(c) ? 1 : -1]
+SL2_STATIC_ASSERT(sizeof(struct sl2_state_pkt)     == 26,  state_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_cmd_pkt)       == 19,  cmd_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_probe_pkt)     == 4,   probe_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_pair_req_pkt)  == 137, pair_req_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_pair_resp_pkt) == 137, pair_resp_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_caps_pkt)      == 68,  caps_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_info_pkt)      == 4,   info_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_req_pkt)  == 4,   wifi_req_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_resp_pkt) == 103, wifi_resp_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_setup_pkt) == 4,  wifi_setup_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_setup_session_pkt) == 8, wifi_setup_session_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_cancel_pkt) == 8, wifi_cancel_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_wifi_cancel_ack_pkt) == 7, wifi_cancel_ack_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_dial_info_pkt) == 43,  dial_info_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_dial_sensor_pkt) == 11, dial_sensor_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_source_entry) == 34, room_source_entry_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_catalog_req_pkt) == 8, room_catalog_req_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_catalog_resp_pkt) == 250, room_catalog_resp_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_source_set_pkt) == 18, room_source_set_size);
+SL2_STATIC_ASSERT(SL2_ROOM_SOURCE_SET_MIN_LEN <= (int)sizeof(struct sl2_room_source_set_pkt),
+                  room_source_set_minlen);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_source_ack_pkt) == 20, room_source_ack_size);
+SL2_STATIC_ASSERT(sizeof(struct sl2_room_source_v2) == 13, room_source_v2_size);
+SL2_STATIC_ASSERT(SL2_DIAL_INFO_MIN_LEN <= (int)sizeof(struct sl2_dial_info_pkt), dial_info_minlen);
+SL2_STATIC_ASSERT(SL2_DIAL_SENSOR_MIN_LEN <= (int)sizeof(struct sl2_dial_sensor_pkt), dial_sensor_minlen);
+SL2_STATIC_ASSERT(SL2_STATE_MIN_LEN <= (int)sizeof(struct sl2_state_pkt), state_minlen);
+SL2_STATIC_ASSERT(SL2_CMD_MIN_LEN   <= (int)sizeof(struct sl2_cmd_pkt),   cmd_minlen);
+SL2_STATIC_ASSERT(SL2_PROBE_MIN_LEN <= (int)sizeof(struct sl2_probe_pkt), probe_minlen);
+SL2_STATIC_ASSERT(SL2_CAPS_MIN_LEN  <= (int)sizeof(struct sl2_caps_pkt),  caps_minlen);
+SL2_STATIC_ASSERT(sizeof(struct sl2_pair_auth_pkt) == 34, pair_auth_size);
+SL2_STATIC_ASSERT(SL2_PAIR_MIN_LEN  <= (int)sizeof(struct sl2_pair_req_pkt), pair_minlen);
+SL2_STATIC_ASSERT(sizeof(struct sl2_dial_info_pkt) + 2 + 112 <= 250,
+                  dial_info_cert_fits);   /* ESP-NOW payload ceiling */
+
+/* ── tolerant decode ──────────────────────────────────────────────────── */
+
+/* Zero-fill dst, then copy min(len, dstsz). A shorter floor-era packet leaves
+ * its missing tail zeroed; a longer future packet has its unknown tail
+ * ignored. Callers gate on `len >= SL2_*_MIN_LEN` first. */
+static inline void sl2_decode_pkt(void *dst, size_t dstsz,
+                                  const void *src, int len) {
+    memset(dst, 0, dstsz);
+    size_t n = (size_t)len < dstsz ? (size_t)len : dstsz;
+    memcpy(dst, src, n);
+}
+
+/* ── temperature display tables ───────────────────────────────────────── */
+
+static inline int16_t sl2_c_to_dc(float c)    { return (int16_t)lroundf(c * 10.0f); }
+static inline float   sl2_dc_to_c(int16_t dc) { return (float)dc / 10.0f; }
+
+/* ftab_id 1: Mitsubishi °F table (deliberately non-linear; e.g. 71F=22.0C,
+ * 72F=22.5C; 19.5C/20.5C have no °F). Byte-identical to v1 espnow_ftab and
+ * the controller web UI's F_TABLE. °F range 61..88. */
+#define SL2_FTAB1_MIN_F 61
+#define SL2_FTAB1_MAX_F 88
+static inline const float *sl2_ftab1(void) {
+    static const float tab[SL2_FTAB1_MAX_F - SL2_FTAB1_MIN_F + 1] = {
+        16.0f,16.5f,17.0f,17.5f,18.0f,18.5f,19.0f,20.0f,21.0f,21.5f,
+        22.0f,22.5f,23.0f,23.5f,24.0f,24.5f,25.0f,25.5f,26.0f,26.5f,
+        27.0f,27.5f,28.0f,28.5f,29.0f,29.5f,30.0f,30.5f,
+    };
+    return tab;
+}
+static inline float sl2_ftab1_f_to_c(int f) {
+    if (f < SL2_FTAB1_MIN_F) f = SL2_FTAB1_MIN_F;
+    if (f > SL2_FTAB1_MAX_F) f = SL2_FTAB1_MAX_F;
+    return sl2_ftab1()[f - SL2_FTAB1_MIN_F];
+}
+static inline int sl2_ftab1_c_to_f(float c) {
+    const float *tab = sl2_ftab1();
+    int bestF = SL2_FTAB1_MIN_F;
+    float bestD = 999.0f;
+    for (int i = 0; i <= SL2_FTAB1_MAX_F - SL2_FTAB1_MIN_F; i++) {
+        float d = fabsf(tab[i] - c);
+        if (d < bestD) { bestD = d; bestF = SL2_FTAB1_MIN_F + i; }
+    }
+    return bestF;
+}
+
+/* Wire deci-C -> display integer in the user's unit, per the controller's
+ * declared table. Measured temps outside a table's range fall back linear. */
+static inline int sl2_dc_to_display(int16_t dc, bool use_f, uint8_t ftab_id) {
+    float c = sl2_dc_to_c(dc);
+    if (!use_f) return (int)lroundf(c);
+    if (ftab_id == 1 && c >= 16.0f && c <= 30.5f) return sl2_ftab1_c_to_f(c);
+    return (int)lroundf(c * 9.0f / 5.0f + 32.0f);
+}
+
+/* Display integer -> wire deci-C. °C snaps to the 0.5C grid; °F goes through
+ * the declared table (linear for ftab_id 0). */
+static inline int16_t sl2_display_to_dc(int v, bool use_f, uint8_t ftab_id) {
+    if (!use_f) return (int16_t)((int)lroundf((float)v * 2.0f) * 5);
+    if (ftab_id == 1) return sl2_c_to_dc(sl2_ftab1_f_to_c(v));
+    return sl2_c_to_dc(((float)v - 32.0f) * 5.0f / 9.0f);
+}
+
+/* ── misc helpers ─────────────────────────────────────────────────────── */
+
+static inline bool sl2_mac_eq(const uint8_t a[6], const uint8_t b[6]) {
+    return memcmp(a, b, 6) == 0;
+}
+
+#ifdef __cplusplus
+}
+#endif

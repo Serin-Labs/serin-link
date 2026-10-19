@@ -50,6 +50,9 @@ CHECKOUT_DEFAULTS = {
                                  "CONFIG_SERIN_SHT40_RH_GAIN_PPT=1110\n"),
     "sdkconfig.defaults.viewe21": "CONFIG_SERIN_BOARD_VIEWE_21=y\n",
 }
+BOARD_PROJECTS = {"viewe15": b"serin_link_viewe15", "viewe21": b"serin_link_viewe21"}
+OTA_BOARDS = {"link15": "viewe15", "link21": "viewe21"}
+sys.path.insert(0, str(REPO / "tools"))
 spec = importlib.util.spec_from_file_location("publish_fw", REPO / "tools/publish_fw.py")
 publish = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish)
@@ -69,17 +72,20 @@ class StagingTests(unittest.TestCase):
                 serialization.NoEncryption()))
             (cls.keys / f"{name}.pub").write_bytes(private.public_key().public_bytes(
                 serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-            cls.signed[name] = cls.signed_image(key=name)
-        cls.signed["next"] = cls.signed_image(version=b"0.1.7")
-        cls.signed["beta"] = cls.signed_image(version=b"0.1.7-beta.1")
+        for name, key, version in (("release", "release", b"0.1.6"),
+                                   ("other", "other", b"0.1.6"),
+                                   ("next", "release", b"0.1.7"),
+                                   ("beta", "release", b"0.1.7-beta.1")):
+            cls.signed[name] = {board: cls.signed_image(version=version, key=key, project=project)
+                                for board, project in BOARD_PROJECTS.items()}
 
     @classmethod
-    def signed_image(cls, version=b"0.1.6", key="release", mutate=None):
+    def signed_image(cls, version=b"0.1.6", key="release", mutate=None, project=b"serin_link_viewe15"):
         # esp_app_desc_t is 256 bytes, with version[32] at offset 16. Build
         # the surrounding ESP32-S3 image with esptool, independently of the
         # publisher's descriptor reader, and sign with a disposable key.
         desc = struct.pack("<IIII32s32s16s16s32s32s80x", 0xABCD5432, 0, 0, 0,
-                           version, b"serin_link", b"12:00:00", b"Sep 18 2026",
+                           version, project, b"12:00:00", b"Sep 18 2026",
                            b"v5.5.4", b"\x01" * 32)
         image = ESP32S3FirmwareImage()
         image.segments = [ImageSegment(0x3c000020, desc)]
@@ -115,7 +121,58 @@ class StagingTests(unittest.TestCase):
                 bdir = self.root / f"build_{kind}_{board}"
                 bdir.mkdir()
                 (bdir / "sdkconfig").write_text(RELEASE_SDKCONFIG)
-                (bdir / publish.BIN_NAME).write_bytes(self.signed["release"])
+                (bdir / publish.BIN_NAME).write_bytes(self.signed["release"][board])
+                if kind == "fac":
+                    (bdir / "boot.bin").write_bytes(b"\xe9boot")
+                    (bdir / "table.bin").write_bytes(b"\xaa\x50tbl")
+                    (bdir / "flash_args").write_text(
+                        "--flash_mode keep --flash_freq keep --flash_size keep\n"
+                        "0x0 boot.bin\n0x8000 table.bin\n0x20000 serin_link.bin\n")
+        (self.root / ".gitignore").write_text(
+            "build_*/\ndist*/\npublished/\nrestaged*/\ndistribution/\nsaved-ota/\n"
+            "own-*/\nself-hosted/\ninvalid.pem\nsdkconfig.signkey.tmp\n")
+        self.git("init", "-q")
+        self.git("config", "user.name", "Release Test")
+        self.git("config", "user.email", "release@example.invalid")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture release source")
+        for version in ("0.1.6", "0.1.7", "0.1.7-beta.1"):
+            self.git("tag", "v" + version)
+        self.seed_receipts()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def seed_receipts(self, version="0.1.6", development=False, kinds=(False, True)):
+        # Generate genuine receipts through the fresh-build public seam. Only
+        # IDF and the merger are replaced, as in all release-tool fixtures.
+        with patch.object(publish, "build", side_effect=lambda board, *_:
+                          self.root / f"build_pub_{board}" / publish.BIN_NAME), \
+                patch.object(publish, "build_factory", side_effect=lambda board, *_:
+                             self.root / f"build_fac_{board}"), \
+                patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            for factory in kinds:
+                out = self.root / ("own-factory" if factory else "own-ota") if development else \
+                      self.root / ("dist_factory" if factory else "dist")
+                args = ["--signing-key", self.keys / ("other.pem" if development else "release.pem"),
+                        "--version", version, "--out", out]
+                if factory:
+                    args.append("--factory")
+                if "-" in version:
+                    args.extend(["--channel", "beta"])
+                if development:
+                    args.append("--development")
+                # Preserve previous staging when refreshing receipts for a new
+                # fixture build, just as a separate release output would.
+                previous = {str(p.relative_to(out)): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+                code, output = self.run_publish(*args)
+                self.assertEqual(code, 0, output)
+                shutil.rmtree(out)
+                for name, data in previous.items():
+                    path = out / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
 
     def run_publish(self, *args):
         output = io.StringIO()
@@ -150,15 +207,275 @@ class StagingTests(unittest.TestCase):
         head[0x8000:0x8005] = b"\xaa\x50tbl"
         out.write_bytes(bytes(head) + (bdir / publish.BIN_NAME).read_bytes())
 
+    def test_production_refuses_real_dirty_staged_untracked_and_untagged_source(self):
+        stage, previous = self.existing_release()
+        version_file = self.root / "version.txt"
+        version_file.write_text("0.1.6\n# edited\n")
+        self.assert_rejected(["--no-build", "--version", "0.1.6"], stage, previous, "clean source")
+        self.git("add", "version.txt")
+        self.assert_rejected(["--no-build", "--version", "0.1.6"], stage, previous, "clean source")
+        self.git("restore", "--staged", "version.txt")
+        version_file.write_text("0.1.6\n")
+        untracked = self.root / "new_source.c"
+        untracked.write_text("int release_drift;\n")
+        self.assert_rejected(["--no-build"], stage, previous, "untracked")
+        untracked.unlink()
+        self.git("tag", "-d", "v0.1.6")
+        self.assert_rejected(["--no-build"], stage, previous, "tag v0.1.6")
+        self.git("tag", "v9.9.9")
+        self.assert_rejected(["--no-build"], stage, previous, "tag v0.1.6")
+
+    def test_production_checks_head_contents_even_when_git_status_hides_edits(self):
+        stage, previous = self.existing_release()
+        version_file = self.root / "version.txt"
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                self.git("update-index", flag, "version.txt")
+                version_file.write_text("0.1.6\n# hidden edit\n")
+                self.assertEqual(self.git("status", "--porcelain"), "")
+                self.assert_rejected(["--no-build", "--version", "0.1.6"],
+                                     stage, previous, "tagged head contents/modes")
+                version_file.write_text("0.1.6\n")
+                self.git("update-index", "--no-assume-unchanged", "--no-skip-worktree", "version.txt")
+        self.git("config", "core.fileMode", "false")
+        version_file.chmod(0o755)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assert_rejected(["--no-build"], stage, previous, "tagged head contents/modes")
+
+    def test_ignored_font_source_cannot_evade_the_release_snapshot(self):
+        fonts = self.root / "main/fonts"
+        fonts.mkdir(parents=True)
+        hidden = fonts / "local_font.c"
+        hidden.write_text("int compiled_by_font_glob;\n")
+        (self.root / ".git/info/exclude").write_text("main/fonts/local_font.c\n")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, "ignored untracked source")
+
+    def test_git_status_error_cannot_masquerade_as_clean_source(self):
+        # Run a real Git fixture, but simulate Git's failed status command
+        # returning no stdout, the unsafe case in the original dirty check.
+        bindir = self.root / "build_git_failure"
+        bindir.mkdir()
+        real_git = shutil.which("git")
+        script = bindir / "git"
+        script.write_text('#!/bin/sh\nif [ "$1" = status ]; then exit 128; fi\n'
+                          f'exec "{real_git}" "$@"\n')
+        script.chmod(0o755)
+        stage, previous = self.existing_release()
+        with patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]}):
+            self.assert_rejected(["--no-build"], stage, previous, "git command failed")
+        shutil.rmtree(self.root / ".git")
+        self.assert_rejected(["--no-build"], stage, previous, "git command failed")
+        (self.root / ".git").write_text("gitdir: missing-git-directory\n")
+        self.assert_rejected(["--no-build"], stage, previous, "git command failed")
+
+    def test_fresh_build_refuses_source_export_inside_another_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ancestor = Path(temporary)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=ancestor, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            (ancestor / ".gitignore").write_text("export/\n")
+            git("init", "-q")
+            git("config", "user.name", "Release Test")
+            git("config", "user.email", "release@example.invalid")
+            git("add", ".")
+            git("commit", "-qm", "unrelated ancestor")
+            git("tag", "v0.1.6")
+            export = ancestor / "export"
+            shutil.copytree(self.root, export, ignore=shutil.ignore_patterns(".git"))
+            self.assertEqual(git("status", "--porcelain"), "")
+            for development in (False, True):
+                for board in BOARD_PROJECTS:
+                    (export / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(
+                        self.signed["other" if development else "release"][board])
+                out = export / ("own-export" if development else "dist")
+                args = ["--signing-key", self.keys / ("other.pem" if development else "release.pem"),
+                        "--out", out]
+                if development:
+                    args.append("--development")
+                with self.subTest(development=development), \
+                        patch.object(publish, "ROOT", export), \
+                        patch.object(publish, "build", side_effect=lambda board, *_:
+                                     export / f"build_pub_{board}" / publish.BIN_NAME) as build:
+                    code, output = self.run_publish(*args)
+                    self.assertNotEqual(code, 0, output)
+                    self.assertIn("git worktree root", output.lower())
+                    build.assert_not_called()
+                    self.assertFalse(out.exists())
+
+    def test_source_provenance_accepts_linked_worktree_root(self):
+        linked = self.root / "build_linked_checkout"
+        self.git("worktree", "add", "--detach", str(linked), "HEAD")
+        self.assertTrue((linked / ".git").is_file())
+        self.assertEqual(publish.provenance.source_state(linked, "0.1.6", False),
+                         publish.provenance.source_state(self.root, "0.1.6", False))
+
+    def test_no_build_requires_receipt_and_rejects_unrelated_config_drift(self):
+        stage, previous = self.existing_release()
+        bdir = self.root / "build_pub_viewe21"
+        receipt = bdir / publish.provenance.RECEIPT
+        saved = receipt.read_bytes()
+        for content in (None, b"not json", b"{}"):
+            with self.subTest(content=content):
+                if content is None:
+                    receipt.unlink()
+                else:
+                    receipt.write_bytes(content)
+                self.assert_rejected(["--no-build"], stage, previous, "provenance")
+        receipt.write_bytes(saved)
+        (bdir / "sdkconfig").write_text(RELEASE_SDKCONFIG + "CONFIG_UNRELATED=y\n")
+        self.assert_rejected(["--no-build"], stage, previous, "source/config mismatch")
+
+    def test_no_build_rejects_other_valid_signed_binary_at_same_version(self):
+        replacement = self.signed_image(mutate=lambda data: data.__setitem__(36, 1),
+                                        project=BOARD_PROJECTS["viewe21"])
+        (self.root / "build_pub_viewe21" / publish.BIN_NAME).write_bytes(replacement)
+        stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, "artifact/hash mismatch")
+
+    def test_no_build_rejects_source_commit_even_with_matching_version_and_config(self):
+        (self.root / "source.c").write_text("int changed_source;\n")
+        self.git("add", "source.c")
+        self.git("commit", "-qm", "new source, same version")
+        self.git("tag", "-f", "v0.1.6")
+        stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, "source/config mismatch")
+
+    def test_factory_receipt_binds_every_flash_input_and_merge_options(self):
+        stage, previous = self.existing_release(factory=True)
+        bdir = self.root / "build_fac_viewe21"
+        # These changes do not affect our fake merger's output. Hashing only
+        # the final app/merged image would miss them entirely.
+        (bdir / "otadata.bin").write_bytes(b"\xff" * 8192)
+        flash = bdir / "flash_args"
+        original = flash.read_bytes()
+        flash.write_bytes(original + b"0xf000 otadata.bin\n")
+        self.seed_receipts(kinds=(True,))
+        for name in ("boot.bin", "table.bin", "otadata.bin", "flash_args"):
+            path = bdir / name
+            saved = path.read_bytes()
+            path.write_bytes(saved + (b"\n" if name == "flash_args" else b"changed"))
+            with self.subTest(input=name), patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+                self.assert_rejected(["--factory", "--no-build"], stage, previous, "source/config mismatch")
+            path.write_bytes(saved)
+
+    def test_fresh_build_refuses_source_change_before_any_staged_replacement(self):
+        stage, previous = self.existing_release()
+        def changing_build(board, *_):
+            if board == "viewe21":
+                (self.root / "source_changed_during_build.c").write_text("int changed;\n")
+            return self.root / f"build_pub_{board}" / publish.BIN_NAME
+        with patch.object(publish, "build", side_effect=changing_build):
+            self.assert_rejected(["--signing-key", self.keys / "release.pem"],
+                                 stage, previous, "clean source")
+
+    def test_development_receipt_tracks_dirty_untagged_source_without_exposing_paths(self):
+        self.git("tag", "-d", "v0.1.6")
+        (self.root / "local_source.c").write_text("int local_work;\n")
+        for kind in ("pub", "fac"):
+            for board in BOARD_PROJECTS:
+                cfg = self.root / f"build_{kind}_{board}/sdkconfig"
+                cfg.write_text(RELEASE_SDKCONFIG + f'CONFIG_SECURE_BOOT_SIGNING_KEY="{self.keys}/other.pem"\n')
+                (cfg.parent / publish.BIN_NAME).write_bytes(self.signed["other"][board])
+        self.seed_receipts(development=True)
+        code, output = self.run_publish("--development", "--no-build", "--out", self.root / "own-ota")
+        self.assertEqual(code, 0, output)
+        manifest = json.loads((self.root / "own-ota/stable/manifest.json").read_text())
+        self.assertTrue(manifest["development"])
+        self.assertTrue(manifest["builds"][0]["provenance"]["source"]["dirty"])
+        self.assertIsNone(manifest["builds"][0]["provenance"]["source"]["tag"])
+        serialized = json.dumps(manifest)
+        for secret in (str(self.root), str(self.keys), "other.pem", "CONFIG_SECURE_BOOT_SIGNING_KEY"):
+            self.assertNotIn(secret, serialized)
+        (self.root / "local_source.c").write_text("int different_local_work;\n")
+        stage = self.root / "own-ota/stable"
+        previous = {p.name: p.read_bytes() for p in stage.iterdir()}
+        self.assert_rejected(["--development", "--no-build", "--out", self.root / "own-ota"],
+                             stage, previous, "source/config mismatch")
+
+    def test_development_snapshot_includes_staged_additions(self):
+        added = self.root / "staged_source.c"
+        added.write_text("int staged_version_one;\n")
+        self.git("add", "staged_source.c")
+        for board in BOARD_PROJECTS:
+            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["other"][board])
+        self.seed_receipts(development=True, kinds=(False,))
+        added.write_text("int staged_version_two;\n")
+        self.git("add", "staged_source.c")
+        stage = self.root / "own-ota/stable"
+        stage.mkdir(parents=True)
+        (stage / "manifest.json").write_bytes(b"previous development manifest")
+        previous = {p.name: p.read_bytes() for p in stage.iterdir()}
+        self.assert_rejected(["--development", "--no-build", "--out", self.root / "own-ota"],
+                             stage, previous, "source/config mismatch")
+
+    def test_factory_rejects_inputs_or_config_changed_by_merge(self):
+        stage, previous = self.existing_release(factory=True)
+        for name in ("boot.bin", "sdkconfig"):
+            path = self.root / "build_fac_viewe21" / name
+            saved = path.read_bytes()
+            def changing_merge(bdir, out):
+                self.merge_fixture(bdir, out)
+                if bdir.name == "build_fac_viewe21":
+                    path.write_bytes(saved + b"\nchanged during merge")
+            with self.subTest(input=name), patch.object(publish, "merge_factory", side_effect=changing_merge):
+                self.assert_rejected(["--factory", "--no-build"], stage, previous, "changed during merge")
+            path.write_bytes(saved)
+
+    def test_split_existing_requires_and_preserves_original_provenance(self):
+        published = self.root / "published"
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            code, output = self.run_publish("--factory", "--no-build", "--out", published)
+        self.assertEqual(code, 0, output)
+        manifest, _ = self.staged_factory(published)
+        original = [entry["provenance"] for entry in manifest["builds"]]
+        # The republisher can have unrelated dirty source and no release tag.
+        self.git("tag", "-d", "v0.1.6")
+        (self.root / "republisher_source.c").write_text("int republisher;\n")
+        code, output = self.run_publish("--factory", "--split-existing", published,
+                                        "--out", self.root / "restaged")
+        self.assertEqual(code, 0, output)
+        again, _ = self.staged_factory(self.root / "restaged")
+        self.assertEqual([entry["provenance"] for entry in again["builds"]], original)
+        stage, previous = self.existing_release(factory=True)
+        del manifest["builds"][1]["provenance"]
+        (published / "factory-manifest.json").write_text(json.dumps(manifest))
+        self.assert_rejected(["--factory", "--split-existing", published], stage, previous, "legacy")
+
     def test_no_build_verifies_without_private_key_and_hashes_exact_staged_bytes(self):
         code, output = self.run_publish("--no-build")
         self.assertEqual(code, 0, output)
         stage = self.root / "dist/stable"
-        manifest = json.loads((stage / "manifest.json").read_text())
+        manifest_bytes = (stage / "manifest.json").read_bytes()
+        # Read the actual firmware boundary, not a mirrored Python constant.
+        device_limit = int(re.search(r"#define MANIFEST_MAX\s+(\d+)",
+                                     (REPO / "main/link_ota.c").read_text())[1])
+        self.assertLess(len(manifest_bytes), device_limit)
+        manifest = json.loads(manifest_bytes)
         self.assertEqual([entry["board"] for entry in manifest["builds"]], ["link15", "link21"])
         for entry in manifest["builds"]:
-            self.assertEqual((stage / entry["path"]).read_bytes(), self.signed["release"])
-            self.assertEqual(entry["sha256"], hashlib.sha256(self.signed["release"]).hexdigest())
+            expected = self.signed["release"][OTA_BOARDS[entry["board"]]]
+            self.assertEqual((stage / entry["path"]).read_bytes(), expected)
+            self.assertEqual(entry["sha256"], hashlib.sha256(expected).hexdigest())
+
+    def test_oversized_ota_manifest_leaves_previous_staging_intact(self):
+        stage, previous = self.existing_release()
+        # argparse accepts repeated valid boards. They used to produce a
+        # manifest too large for the dial's fixed fetch buffer.
+        self.assert_rejected(["--no-build", "--boards", *(["viewe15", "viewe21"] * 3)],
+                             stage, previous, "device limit is 4095")
+        receipts = [self.root / f"build_pub_{board}" / publish.provenance.RECEIPT
+                    for board in BOARD_PROJECTS]
+        for receipt in receipts:
+            receipt.write_bytes(b"prior build receipt")
+        with patch.object(publish, "build", side_effect=lambda board, *_:
+                          self.root / f"build_pub_{board}" / publish.BIN_NAME):
+            self.assert_rejected(["--signing-key", self.keys / "release.pem", "--boards",
+                                  *(["viewe15", "viewe21"] * 3)],
+                                 stage, previous, "device limit is 4095")
+        self.assertTrue(all(receipt.read_bytes() == b"prior build receipt" for receipt in receipts))
 
     def make_distribution(self):
         distribution = self.root / "distribution"
@@ -180,7 +497,7 @@ class StagingTests(unittest.TestCase):
             builds = []
             for board in ("link15", "link21"):
                 name = f"{board}-app.bin"
-                data = self.signed[image]
+                data = self.signed[image][OTA_BOARDS[board]]
                 (folder / name).write_bytes(data)
                 builds.append({"board": board, "path": name, "size": len(data),
                                "sha256": hashlib.sha256(data).hexdigest()})
@@ -214,7 +531,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual({b["board"] for b in manifest["builds"]}, {"link15", "link21"})
         for build in manifest["builds"]:
             self.assertNotIn("enc_size", build)
-            self.assertEqual((stage / build["path"]).read_bytes(), self.signed["release"])
+            self.assertEqual((stage / build["path"]).read_bytes(), self.signed["release"][OTA_BOARDS[build["board"]]])
         after = self.distribution_files(distribution)
         untouched = {name: data for name, data in previous.items()
                      if not name.startswith("firmware/link/ota/stable/")}
@@ -229,7 +546,8 @@ class StagingTests(unittest.TestCase):
             with self.subTest(channel=channel, version=version):
                 before = self.distribution_files(distribution)
                 for board in ("viewe15", "viewe21"):
-                    (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed[image])
+                    (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed[image][board])
+                self.seed_receipts(version=version, kinds=(False,))
                 code, output = self.run_publish("--no-build", "--channel", channel, "--version", version,
                                                 "--distribution", distribution)
                 self.assertEqual(code, 0, output)
@@ -245,7 +563,7 @@ class StagingTests(unittest.TestCase):
                 self.assertEqual(manifest["channel"], channel)
                 for build in manifest["builds"]:
                     data = (manifest_path.parent / build["path"]).read_bytes()
-                    self.assertEqual(data, self.signed[image])
+                    self.assertEqual(data, self.signed[image][OTA_BOARDS[build["board"]]])
                     self.assertEqual(hashlib.sha256(data).hexdigest(), build["sha256"])
                 after = self.distribution_files(distribution)
                 untouched = {name: data for name, data in before.items()
@@ -259,7 +577,8 @@ class StagingTests(unittest.TestCase):
         (distribution / "firmware/esphome/firmware.bin").write_bytes(b"corrupted other product")
         before = self.distribution_files(distribution)
         for board in ("viewe15", "viewe21"):
-            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["next"])
+            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["next"][board])
+        self.seed_receipts(version="0.1.7", kinds=(False,))
         code, output = self.run_publish("--no-build", "--version", "0.1.7", "--distribution", distribution)
         self.assertNotEqual(code, 0, output)
         self.assertIn("sha256 does not match", output)
@@ -271,8 +590,8 @@ class StagingTests(unittest.TestCase):
         legacy.write_text(json.dumps({
             "name": "Retired encrypted Link", "version": "0.1.6", "builds": [{
                 "board": "link15", "path": "ota/stable/link15-app.bin",
-                "size": len(self.signed["release"]), "enc_size": 123,
-                "sha256": hashlib.sha256(self.signed["release"]).hexdigest()}]}))
+                "size": len(self.signed["release"]["viewe15"]), "enc_size": 123,
+                "sha256": hashlib.sha256(self.signed["release"]["viewe15"]).hexdigest()}]}))
         before = self.distribution_files(distribution)
         code, output = self.run_publish("--no-build", "--distribution", distribution)
         self.assertNotEqual(code, 0, output)
@@ -327,16 +646,19 @@ class StagingTests(unittest.TestCase):
         overlay = self.root / "sdkconfig.defaults.viewe"
         overlay.write_text(overlay.read_text().replace("OFFSET_CC=100", "OFFSET_CC=90"))
         stage, previous = self.existing_release()
+        self.assert_rejected(["--no-build"], stage, previous, message="clean source")
+        self.git("add", "sdkconfig.defaults.viewe")
+        self.git("commit", "-qm", "new calibration")
+        self.git("tag", "-f", "v0.1.6")
         self.assert_rejected(["--no-build"], stage, previous, message="config_serin_sht40_offset_cc")
         cfg = self.root / "build_pub_viewe15/sdkconfig"
         cfg.write_text(RELEASE_SDKCONFIG.replace("OFFSET_CC=100", "OFFSET_CC=90"))
-        code, output = self.run_publish("--no-build")
-        self.assertEqual(code, 0, output)
+        self.assert_rejected(["--no-build"], stage, previous, message="provenance")
 
     def test_no_build_needs_the_board_overlays_it_compares_against(self):
         (self.root / "sdkconfig.defaults.viewe").unlink()
         stage, previous = self.existing_release()
-        self.assert_rejected(["--no-build"], stage, previous, message="sdkconfig.defaults.viewe")
+        self.assert_rejected(["--no-build"], stage, previous, message="clean source")
 
     def test_board_trim_comes_from_the_checkout_overlay_chain(self):
         # Later files in the chain win; a board whose chain sets no trim has
@@ -355,7 +677,8 @@ class StagingTests(unittest.TestCase):
         for kind in ("pub", "fac"):
             for board in ("viewe15", "viewe21"):
                 (self.root / f"build_{kind}_{board}/sdkconfig").write_text(own)
-                (self.root / f"build_{kind}_{board}" / publish.BIN_NAME).write_bytes(self.signed["other"])
+                (self.root / f"build_{kind}_{board}" / publish.BIN_NAME).write_bytes(self.signed["other"][board])
+        self.seed_receipts(development=True)
         code, output = self.run_publish("--no-build", "--development", "--out", self.root / "own-ota")
         self.assertEqual(code, 0, output)
         with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
@@ -419,14 +742,14 @@ class StagingTests(unittest.TestCase):
             self.assert_rejected([], stage, previous, message="--signing-key")
 
     def test_new_build_output_is_verified(self):
-        (self.root / "build_pub_viewe21" / publish.BIN_NAME).write_bytes(self.signed["other"])
+        (self.root / "build_pub_viewe21" / publish.BIN_NAME).write_bytes(self.signed["other"]["viewe21"])
         stage, previous = self.existing_release()
         with patch.object(publish, "build", side_effect=lambda board, *_:
                           self.root / f"build_pub_{board}" / publish.BIN_NAME):
             self.assert_rejected(["--signing-key", self.keys / "release.pem"], stage, previous)
 
     def test_invalid_second_board_preserves_entire_previous_release(self):
-        valid = self.signed["release"]
+        valid = self.signed["release"]["viewe21"]
         tampered = bytearray(valid)
         tampered[10] ^= 1
         bad_signature = bytearray(valid)
@@ -442,7 +765,7 @@ class StagingTests(unittest.TestCase):
         later_valid_block = (valid[:-4096] + bytes(bad_signature[-4096:-4096 + 1216])
                              + valid[-4096:-4096 + 1216] + b"\xff" * (4096 - 2432))
         stage, previous = self.existing_release()
-        cases = {"wrong signer": self.signed["other"], "unsigned": valid[:-4096],
+        cases = {"wrong signer": self.signed["other"]["viewe21"], "unsigned": valid[:-4096],
                  "changed payload": tampered, "bad signature": bad_signature,
                  "changed embedded key": bad_embedded_key, "bad CRC": bad_crc,
                  "truncated": valid[:-1], "empty": b"",
@@ -458,7 +781,7 @@ class StagingTests(unittest.TestCase):
         def corrupt_merge(bdir, out):
             # Simulates a stale/wrong app included by merge, even though the
             # standalone build output carries the correct signature.
-            out.write_bytes(b"\xff" * 0x20000 + self.signed["other"])
+            out.write_bytes(b"\xff" * 0x20000 + self.signed["other"]["viewe15"])
 
         with patch.object(publish, "build_factory", side_effect=lambda board, *_:
                           self.root / f"build_fac_{board}"), \
@@ -475,7 +798,7 @@ class StagingTests(unittest.TestCase):
         manifest = json.loads((stage / "factory-manifest.json").read_text())
         for entry in manifest["builds"]:
             data = (stage / entry["path"]).read_bytes()
-            self.assertEqual(data[0x20000:], self.signed["release"])
+            self.assertEqual(data[0x20000:], self.signed["release"][entry["board"]])
             self.assertEqual(entry["sha256"], hashlib.sha256(data).hexdigest())
 
     def test_factory_no_build_merges_without_idf_or_private_key(self):
@@ -487,14 +810,17 @@ class StagingTests(unittest.TestCase):
             "0x0 boot.bin\n0x8000 table.bin\n0x20000 serin_link.bin\n")
         # Python and esptool remain available through sys.executable, while
         # idf.py, the compiler, and production private keys are unavailable.
-        with patch.dict(os.environ, {"PATH": str(self.root / "empty-path")}):
+        bindir = self.root / "build_tools"
+        bindir.mkdir()
+        (bindir / "git").symlink_to(shutil.which("git"))
+        with patch.dict(os.environ, {"PATH": str(bindir)}):
             try:
                 code, output = self.run_publish("--factory", "--no-build", "--boards", "viewe15")
             except FileNotFoundError as error:
                 self.fail(f"--no-build unexpectedly needs a build tool: {error}")
         self.assertEqual(code, 0, output)
         data = (self.root / "dist_factory/serin_link_viewe15_factory.bin").read_bytes()
-        self.assertEqual(data[0x20000:], self.signed["release"])
+        self.assertEqual(data[0x20000:], self.signed["release"]["viewe15"])
 
     def staged_factory(self, stage):
         manifest = json.loads((stage / "factory-manifest.json").read_text())
@@ -531,7 +857,8 @@ class StagingTests(unittest.TestCase):
 
     def test_beta_factory_stages_to_its_own_directory_with_channel(self):
         for board in ("viewe15", "viewe21"):
-            (self.root / f"build_fac_{board}" / publish.BIN_NAME).write_bytes(self.signed["beta"])
+            (self.root / f"build_fac_{board}" / publish.BIN_NAME).write_bytes(self.signed["beta"][board])
+        self.seed_receipts(version="0.1.7-beta.1", kinds=(True,))
         stable, previous = self.existing_release(factory=True)
         with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
             code, output = self.run_publish("--factory", "--no-build", "--channel", "beta",
@@ -555,8 +882,7 @@ class StagingTests(unittest.TestCase):
             del entry["parts"]
         manifest["dirty"] = False
         (published / "factory-manifest.json").write_text(json.dumps(manifest))
-        with patch.object(publish, "merge_factory", side_effect=AssertionError("unexpected merge")), \
-                patch.object(publish, "_tree_dirty", return_value=True):
+        with patch.object(publish, "merge_factory", side_effect=AssertionError("unexpected merge")):
             code, output = self.run_publish("--factory", "--split-existing", published,
                                             "--out", self.root / "restaged")
         self.assertEqual(code, 0, output)
@@ -580,7 +906,7 @@ class StagingTests(unittest.TestCase):
         self.assertTrue((self.root / "dist_factory/factory-manifest.json").is_file())
 
     def test_factory_invalid_second_board_preserves_previous_release(self):
-        (self.root / "build_fac_viewe21" / publish.BIN_NAME).write_bytes(self.signed["other"])
+        (self.root / "build_fac_viewe21" / publish.BIN_NAME).write_bytes(self.signed["other"]["viewe21"])
         stage, previous = self.existing_release(factory=True)
         with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
             self.assert_rejected(["--factory", "--no-build"], stage, previous)
@@ -602,23 +928,26 @@ class StagingTests(unittest.TestCase):
 
     def test_development_still_verifies_own_signer(self):
         for board in ("viewe15", "viewe21"):
-            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["other"])
+            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["other"][board])
+        self.seed_receipts(development=True, kinds=(False,))
         out = self.root / "self-hosted"
         code, output = self.run_publish("--no-build", "--development", "--out", out)
         self.assertEqual(code, 0, output)
         stage = out / "stable"
         previous = {p.name: p.read_bytes() for p in stage.iterdir()}
-        (self.root / "build_pub_viewe21" / publish.BIN_NAME).write_bytes(self.signed["release"])
+        (self.root / "build_pub_viewe21" / publish.BIN_NAME).write_bytes(self.signed["release"]["viewe21"])
         self.assert_rejected(["--no-build", "--development", "--out", out], stage, previous)
 
     def test_development_factory_uses_separate_output_and_own_key(self):
-        (self.root / "build_fac_viewe15" / publish.BIN_NAME).write_bytes(self.signed["other"])
+        (self.root / "build_fac_viewe15" / publish.BIN_NAME).write_bytes(self.signed["other"]["viewe15"])
+        (self.root / "build_fac_viewe21" / publish.BIN_NAME).write_bytes(self.signed["other"]["viewe21"])
+        self.seed_receipts(development=True, kinds=(True,))
         with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
             code, output = self.run_publish("--factory", "--no-build", "--boards", "viewe15",
                                             "--development", "--out", self.root / "own-factory")
         self.assertEqual(code, 0, output)
         self.assertEqual((self.root / "own-factory/serin_link_viewe15_factory.bin").read_bytes()[0x20000:],
-                         self.signed["other"])
+                         self.signed["other"]["viewe15"])
         self.assertFalse((self.root / "dist_factory").exists())
 
     def test_no_build_cannot_relabel_old_firmware(self):
@@ -631,10 +960,78 @@ class StagingTests(unittest.TestCase):
                 with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
                     self.assert_rejected(args, stage, previous, message="version")
 
+    def test_signed_app_for_the_other_board_preserves_previous_release(self):
+        # Catch checking only signatures, versions or build-directory names:
+        # these images have the right signer/version and matching sdkconfigs.
+        for factory, kind in ((False, "pub"), (True, "fac")):
+            stage, previous = self.existing_release(factory=factory)
+            for fresh in (False, True):
+                for target, actual in (("viewe15", "viewe21"), ("viewe21", "viewe15")):
+                    with self.subTest(factory=factory, fresh=fresh, target=target):
+                        for board in BOARD_PROJECTS:
+                            data = self.signed["release"][actual if board == target else board]
+                            (self.root / f"build_{kind}_{board}" / publish.BIN_NAME).write_bytes(data)
+                        args = ["--signing-key", self.keys / "release.pem"] if fresh else ["--no-build"]
+                        if factory:
+                            args.append("--factory")
+                        with patch.object(publish, "build", side_effect=lambda board, *_:
+                                          self.root / f"build_pub_{board}" / publish.BIN_NAME), \
+                                patch.object(publish, "build_factory", side_effect=lambda board, *_:
+                                             self.root / f"build_fac_{board}"), \
+                                patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+                            self.assert_rejected(args, stage, previous, message="project")
+
+    def test_project_name_must_be_specific_ascii_and_terminated(self):
+        # A valid signature cannot rescue an absent, generic or malformed
+        # board identity; reading beyond project_name[32] is also invalid.
+        cases = {"generic": b"serin_link", "empty": b"", "unknown": b"serin_link_viewe21_extra",
+                 "non-ASCII": b"serin_link_viewe21\xff", "unterminated": b"serin_link_viewe21" + b"x" * 14}
+        apps = {name: self.signed_image(project=project) for name, project in cases.items()}
+        for factory, kind in ((False, "pub"), (True, "fac")):
+            stage, previous = self.existing_release(factory=factory)
+            for name, app in apps.items():
+                with self.subTest(factory=factory, project=name):
+                    (self.root / f"build_{kind}_viewe21" / publish.BIN_NAME).write_bytes(app)
+                    args = ["--no-build"] + (["--factory"] if factory else [])
+                    with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+                        self.assert_rejected(args, stage, previous, message="project")
+
+    def test_factory_checks_board_in_final_merged_app(self):
+        stage, previous = self.existing_release(factory=True)
+        def merge_wrong_board(bdir, out):
+            self.merge_fixture(bdir, out)
+            if bdir.name == "build_fac_viewe21":
+                out.write_bytes(out.read_bytes()[:0x20000] + self.signed["release"]["viewe15"])
+        with patch.object(publish, "merge_factory", side_effect=merge_wrong_board):
+            self.assert_rejected(["--no-build", "--factory"], stage, previous, message="project")
+
+    def test_split_existing_rejects_crossed_boards_and_generic_archives(self):
+        published = self.root / "published"
+        with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
+            code, output = self.run_publish("--factory", "--no-build", "--out", published)
+        self.assertEqual(code, 0, output)
+        manifest, files = self.staged_factory(published)
+        stage, previous = self.existing_release(factory=True)
+        cases = (("viewe15", self.signed["release"]["viewe21"]),
+                 ("viewe21", self.signed["release"]["viewe15"]),
+                 ("viewe21", self.signed_image(project=b"serin_link")))
+        for target, app in cases:
+            with self.subTest(target=target, project=app[80:112]):
+                for entry in manifest["builds"]:
+                    data = files[entry["path"]]
+                    if entry["board"] == target:
+                        data = data[:0x20000] + app
+                    (published / entry["path"]).write_bytes(data)
+                    entry["sha256"] = hashlib.sha256(data).hexdigest()
+                    entry["size"] = len(data)
+                (published / "factory-manifest.json").write_text(json.dumps(manifest))
+                self.assert_rejected(["--factory", "--split-existing", published],
+                                     stage, previous, message="project")
+
     def test_second_board_version_mismatch_preserves_previous_release(self):
         for factory, kind in ((False, "pub"), (True, "fac")):
             with self.subTest(factory=factory):
-                (self.root / f"build_{kind}_viewe21" / publish.BIN_NAME).write_bytes(self.signed["next"])
+                (self.root / f"build_{kind}_viewe21" / publish.BIN_NAME).write_bytes(self.signed["next"]["viewe21"])
                 stage, previous = self.existing_release(factory=factory)
                 args = ["--no-build"] + (["--factory"] if factory else [])
                 with patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
@@ -642,7 +1039,8 @@ class StagingTests(unittest.TestCase):
 
     def test_matching_beta_version_is_staged(self):
         for board in ("viewe15", "viewe21"):
-            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["beta"])
+            (self.root / f"build_pub_{board}" / publish.BIN_NAME).write_bytes(self.signed["beta"][board])
+        self.seed_receipts(version="0.1.7-beta.1", kinds=(False,))
         code, output = self.run_publish("--no-build", "--channel", "beta", "--version", "0.1.7-beta.1")
         self.assertEqual(code, 0, output)
         manifest = json.loads((self.root / "dist/beta/manifest.json").read_text())
@@ -656,7 +1054,7 @@ class StagingTests(unittest.TestCase):
     def test_factory_checks_version_in_merged_app(self):
         stage, previous = self.existing_release(factory=True)
         def merge_wrong_version(bdir, out):
-            out.write_bytes(b"\xff" * 0x20000 + self.signed["next"])
+            out.write_bytes(b"\xff" * 0x20000 + self.signed["next"]["viewe15"])
         with patch.object(publish, "merge_factory", side_effect=merge_wrong_version):
             self.assert_rejected(["--no-build", "--factory"], stage, previous, message="version")
 
@@ -667,7 +1065,10 @@ class StagingTests(unittest.TestCase):
         for factory in (False, True):
             with self.subTest(factory=factory):
                 cached_version = "0.1.6"
-                def idf_build(cmd, *, cwd, check):
+                real_run = subprocess.run
+                def idf_build(cmd, *, cwd, check=False, **kwargs):
+                    if cmd[0] != "idf.py":
+                        return real_run(cmd, cwd=cwd, check=check, **kwargs)
                     nonlocal cached_version
                     self.assertEqual(cmd[0], "idf.py")
                     self.assertEqual(cmd[-1], "build")
@@ -676,25 +1077,25 @@ class StagingTests(unittest.TestCase):
                             cached_version = arg.split("=", 1)[1]
                     bdir = Path(cmd[cmd.index("-B") + 1])
                     (bdir / "sdkconfig").write_text(RELEASE_SDKCONFIG)
-                    data = self.signed["next" if cached_version == "0.1.7" else "release"]
+                    board = bdir.name.split("_")[-1]
+                    data = self.signed["next" if cached_version == "0.1.7" else "release"][board]
                     (bdir / publish.BIN_NAME).write_bytes(data)
 
                 args = ["--signing-key", self.keys / "release.pem"]
                 if factory:
                     args.append("--factory")
                 with patch.object(publish.subprocess, "run", side_effect=idf_build), \
-                        patch.object(publish, "merge_factory", side_effect=self.merge_fixture), \
-                        patch.object(publish, "_tree_dirty", return_value=True):
+                        patch.object(publish, "merge_factory", side_effect=self.merge_fixture):
                     code, output = self.run_publish(*args, "--version", "0.1.7")
                     self.assertEqual(code, 0, output)
                     stage = self.root / ("dist_factory" if factory else "dist/stable")
                     filename = "serin_link_viewe15_factory.bin" if factory else "link15-app.bin"
                     data = (stage / filename).read_bytes()
-                    self.assertEqual(data[0x20000:] if factory else data, self.signed["next"])
+                    self.assertEqual(data[0x20000:] if factory else data, self.signed["next"]["viewe15"])
                     code, output = self.run_publish(*args)
                     self.assertEqual(code, 0, output)
                     data = (stage / filename).read_bytes()
-                    self.assertEqual(data[0x20000:] if factory else data, self.signed["release"])
+                    self.assertEqual(data[0x20000:] if factory else data, self.signed["release"]["viewe15"])
 
     def test_malformed_descriptor_is_rejected_even_when_signature_is_valid(self):
         stage, previous = self.existing_release()

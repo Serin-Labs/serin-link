@@ -3,8 +3,9 @@
 # Copyright (C) 2026 Mehmet Bayram
 """Rebuild the vane louver PNG masters from their SVGs — the true vectors.
 
-The 14 louver states in icon_masters/icon_assets/svg/ are the source vectors. This renders each at 4x
-its SVG canvas with cairosvg and writes icon_masters/icon_assets/png/<name>.png
+The 14 louver states in tools/assets/icons/svg/ are the source vectors.
+This renders each at 4x
+its SVG canvas with cairosvg and writes tools/assets/icons/png/<name>.png
 for gen_icons.py to bake, replacing the old bake-resolution recoveries.
 
 Two deliberate choices:
@@ -29,8 +30,8 @@ import cairosvg
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SVGDIR = os.path.join(ROOT, "icon_masters", "icon_assets", "svg")
-PNGDIR = os.path.join(ROOT, "icon_masters", "icon_assets", "png")
+SVGDIR = os.path.join(ROOT, "tools", "assets", "icons", "svg")
+PNGDIR = os.path.join(ROOT, "tools", "assets", "icons", "png")
 SS = 4
 
 STATES = (["vane_v_auto"] + [f"vane_v_{i}" for i in range(1, 6)] + ["vane_v_swing"] +

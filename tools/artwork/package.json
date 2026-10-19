@@ -1,0 +1,11 @@
+{
+  "name": "serin-artwork",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": "24.18.0"
+  },
+  "dependencies": {
+    "lv_font_conv": "1.5.3"
+  }
+}

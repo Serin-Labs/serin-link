@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="32 47 200 200" fill="none">
+  <g transform="translate(215,65) rotate(90)">
+      <path d="M 0 0 L 120 0 A 120 120 0 0 1 116.435 29.031 Z" transform="rotate(0)" fill="currentColor" fill-opacity="1"></path>
+      <path d="M 0 0 L 120 0 A 120 120 0 0 1 116.435 29.031 Z" transform="rotate(19)" fill="currentColor" fill-opacity="1"></path>
+      <path d="M 0 0 L 120 0 A 120 120 0 0 1 116.435 29.031 Z" transform="rotate(38)" fill="currentColor" fill-opacity="1"></path>
+      <path d="M 0 0 L 120 0 A 120 120 0 0 1 116.435 29.031 Z" transform="rotate(57)" fill="currentColor" fill-opacity="1"></path>
+      <path d="M 0 0 L 120 0 A 120 120 0 0 1 116.435 29.031 Z" transform="rotate(76)" fill="currentColor" fill-opacity="1"></path>
+      <path d="M 147.72 26.05 A 150 150 0 0 1 26.05 147.72" fill="none" stroke="currentColor" stroke-width="12"></path>
+      <g transform="translate(147.72,26.05) rotate(10)"><polygon points="0,-18 16,12 -16,12" fill="currentColor"></polygon></g>
+      <g transform="translate(26.05,147.72) rotate(80)"><polygon points="0,18 16,-12 -16,-12" fill="currentColor"></polygon></g>
+  </g>
+</svg>

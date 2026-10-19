@@ -2,6 +2,7 @@
  * Copyright (C) 2026 Mehmet Bayram
  */
 #include "ui_internal.h"
+#include "ui_name.h"
 #include "ui_rim.h"
 #include "sl2_proto.h"
 #include <stdint.h>
@@ -138,10 +139,11 @@ void refresh_room_source(void)
         rim_select(&RR, back ? RP.count : s_pick - RP.first, color);
         char name[SL2_ROOM_SOURCE_NAME_LEN + 1];
         if (!back) {
-            memcpy(name, s_options[s_pick].name, SL2_ROOM_SOURCE_NAME_LEN);
-            name[SL2_ROOM_SOURCE_NAME_LEN] = '\0';
+            ui_name_copy(name, sizeof name, s_options[s_pick].name,
+                         sizeof s_options[s_pick].name);
         }
-        lv_label_set_text(RP.name, back ? "Back" : name);
+        ui_name_label(RP.name, back ? "Back" : name, FONT_SET_NAME,
+                      &jakarta_600_40_latin);
         lv_obj_set_style_text_color(RP.name, lv_color_hex(color), 0);
         if (!back && s_count > SOURCES_PER_RING) {
             lv_label_set_text_fmt(RP.position, "%d / %d", s_pick + 1, s_count);

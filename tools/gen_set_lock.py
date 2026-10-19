@@ -13,7 +13,7 @@ Procedural glyph; no hand-authored master exists.
 If a real design pass ever produces a proper set_lock master, swap the PNG and
 delete this script's role.
 
-    python3 tools/gen_set_lock.py   # writes icon_masters/icon_assets/png/set_lock.png
+    python3 tools/gen_set_lock.py   # writes tools/assets/icons/png/set_lock.png
 """
 import os
 
@@ -23,7 +23,7 @@ BAKE = 52
 SS = 16
 NAME = "set_lock"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 def main():
     s = BAKE * SS

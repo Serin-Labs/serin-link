@@ -4,6 +4,14 @@
 #pragma once
 #include "lvgl.h"
 
+/* Name faces (18/27/40): ASCII plus U+00A0–00AC, U+00AE–0148,
+ * U+014A–017E. Latin excludes soft hyphen, ŉ, and ſ. The _latin aliases
+ * share glyph tables and reserve full accent height; ASCII keeps its metrics.
+ * Other face-specific subsets are documented in fonts/README_fonts.md. */
+LV_FONT_DECLARE(jakarta_600_18_latin);
+LV_FONT_DECLARE(jakarta_600_27_latin);
+LV_FONT_DECLARE(jakarta_600_40_latin);
+
 LV_FONT_DECLARE(jakarta_600_58);
 LV_FONT_DECLARE(jakarta_600_40);
 LV_FONT_DECLARE(jakarta_600_27);

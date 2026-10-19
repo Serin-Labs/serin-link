@@ -156,7 +156,6 @@ void bsp_display_deep_off(bool off) {
     }
 }
 
-#if !CONFIG_SERIN_THERMAL_CAL
 #define PANEL_DEEP_PREF "panel_deep"
 static bool  s_deep_pref;
 static bool  s_deep_pref_loaded;
@@ -285,17 +284,12 @@ void bsp_register_console(void) {
     };
     esp_console_cmd_register(&d);
 }
-#else
-void bsp_register_console(void) {}
-#endif
 
 void bsp_display_sleep(bool sleep) {
     s_dark = sleep;
     backlight_apply(sleep ? 0 : s_bl_pct);
-#if !CONFIG_SERIN_THERMAL_CAL
     if (sleep ? panel_deep() : (s_pw_q != NULL))
         panel_post(sleep ? PW_SLEEP : PW_WAKE);
-#endif
 }
 
 static void tp_reset_pulse(void) {

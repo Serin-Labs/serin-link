@@ -73,7 +73,7 @@ if [[ -z "$x1" || -z "$x2" || $((x2 - x1 + 1)) -gt $(((310 * disp + 240) / 480))
     fail=1
 fi
 
-# Preserve the zone-name regression: both pickers bound long names.
+# Preserve the companion zone-name regression: both pickers bound long names.
 zone_name=ABCDEFGHIJKLMNOPQRSTUVWXYZ12345
 LOG=$(run "zones 2 0; zone 0 name=$zone_name; screen zones; wait 150; labelbox $zone_name")
 zone_box=$(sed -n "s/^labelbox text=$zone_name box=//p" <<<"$LOG")

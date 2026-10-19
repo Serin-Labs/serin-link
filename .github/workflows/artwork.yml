@@ -1,0 +1,34 @@
+name: Artwork reproducibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.18.0'
+      - name: Install isolated artwork dependencies
+        run: |
+          python -m venv tools/artwork/.venv
+          tools/artwork/.venv/bin/python -m pip install -r tools/artwork/requirements.txt
+          npm ci --prefix tools/artwork --ignore-scripts
+      - name: Verify committed artwork and failure diagnostics
+        run: |
+          tools/artwork/.venv/bin/python tools/artwork.py --check
+          tools/artwork/.venv/bin/python tools/test_artwork.py
+          tools/artwork/.venv/bin/python tools/test_recover_icons.py

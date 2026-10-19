@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Mehmet Bayram
 """coach_arrow PNG master: an up arrow — shaft + chevron head — the coach
-chain's flick-up hint.
-Drawn procedurally, like the set_* family.
+chain's flick-up hint, drawn procedurally like the set_* family.
 
-    python3 tools/gen_coach_arrow.py  # writes icon_masters/icon_assets/png/coach_arrow.png
+    python3 tools/gen_coach_arrow.py  # writes tools/assets/icons/png/coach_arrow.png
 """
 import os
 
@@ -15,7 +14,7 @@ BAKE = 48
 SS = 16
 NAME = "coach_arrow"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 def main():
     s = BAKE * SS

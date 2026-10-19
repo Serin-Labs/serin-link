@@ -10,7 +10,7 @@ set_* family (gen_icons.py whitelists the 52->60 bake in UPSCALE_OK).
 Placeholder: if a design pass produces a real set_transitions master, swap
 the PNG and delete this script's role.
 
-    python3 tools/gen_set_transitions.py  # writes icon_masters/icon_assets/png/set_transitions.png
+    python3 tools/gen_set_transitions.py  # writes tools/assets/icons/png/set_transitions.png
 """
 import os
 
@@ -20,7 +20,7 @@ BAKE = 52
 SS = 16
 NAME = "set_transitions"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 def main():
     s = BAKE * SS

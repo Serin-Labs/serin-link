@@ -12,7 +12,7 @@ Baked at 80x80 = the display size (the home entry face shows it at
 SERIN_PX(80)), so gen_icons.py emits the variant byte-identical and mkicon()
 draws at ~1:1.
 
-    python3 tools/gen_hero_hotspot.py   # writes icon_masters/icon_assets/png/hero_hotspot.png
+    python3 tools/gen_hero_hotspot.py   # writes tools/assets/icons/png/hero_hotspot.png
 """
 import math
 import os
@@ -23,7 +23,7 @@ BAKE = 80
 SS = 16
 NAME = "hero_hotspot"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 def main():
     s = BAKE * SS

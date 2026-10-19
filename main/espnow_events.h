@@ -13,6 +13,7 @@ typedef struct {
     uint8_t kind;
     uint8_t zi;
     uint8_t len;
+    uint32_t received_ms; /* EV_RX receipt time captured before queue publication. */
     uint8_t data[ESP_NOW_MAX_DATA_LEN];
 } evt_t;
 

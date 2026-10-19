@@ -8,7 +8,6 @@
 #include "perf_stats.h"
 #include "factory_reset.h"
 #include "sensor_sht40.h"
-#include "thermal_cal.h"
 #include "wdt_crumb.h"
 #include "esp_lvgl_port.h"
 #include "esp_app_desc.h"
@@ -85,7 +84,6 @@ void app_main(void)
     sensor_sht40_init();
     espnow_client_start();
     link_ota_init();
-    thermal_cal_start();
 
     ESP_LOGI(TAG, "main stack headroom %u bytes",
              (unsigned)uxTaskGetStackHighWaterMark(NULL));

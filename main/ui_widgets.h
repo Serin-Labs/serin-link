@@ -27,6 +27,9 @@ lv_obj_t *mkicon(lv_obj_t *p, const serin_icon_t *ic, int disp, uint32_t col);
 void      icon_set(lv_obj_t *im, const serin_icon_t *ic, uint32_t col);
 void      icon_fit(lv_obj_t *im, const serin_icon_t *ic, int disp);
 lv_obj_t *mklabel(lv_obj_t *p, const lv_font_t *f, uint32_t c, const char *t);
+/* Choose full accent metrics only for a non-ASCII controller name. */
+void ui_name_label(lv_obj_t *label, const char *name, const lv_font_t *ascii,
+                   const lv_font_t *latin);
 lv_obj_t *mkbody(lv_obj_t *p, const lv_font_t *f, uint32_t c, const char *t,
                  int32_t w);
 lv_obj_t *mkdot(lv_obj_t *p, int sz, uint32_t c);

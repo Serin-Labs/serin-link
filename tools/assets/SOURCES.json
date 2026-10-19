@@ -1,0 +1,716 @@
+{
+  "description": "Public artwork input provenance and SHA-256 audit. Update hashes when intentionally editing inputs; PNG alpha is authoritative for regeneration.",
+  "files": [
+    {
+      "path": "tools/assets/icons/png/coach_arrow.png",
+      "sha256": "0b562bf384fcadc2e6d0537979005ccbdbc0b646d28fea6ce2f21af8b12eb935",
+      "size": [
+        48,
+        48
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_coach_arrow.py"
+    },
+    {
+      "path": "tools/assets/icons/png/coach_turn_ccw_l.png",
+      "sha256": "c3fa3d6cada8e427b7d05bc9c24fa88c2e8b840e624537fd09fe7b29fdcfa5a6",
+      "size": [
+        128,
+        128
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_coach_turn_arrows.py"
+    },
+    {
+      "path": "tools/assets/icons/png/coach_turn_ccw_r.png",
+      "sha256": "b634ed7a562942ca573d26cde5d33bf65995bbc96892e3b2c452b8680070fe51",
+      "size": [
+        128,
+        128
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_coach_turn_arrows.py"
+    },
+    {
+      "path": "tools/assets/icons/png/coach_turn_cw_l.png",
+      "sha256": "bcec5ff3f45d7b561382a00f2e6a2dfb17da3ad5efc50ca5bb51b904ba477d64",
+      "size": [
+        128,
+        128
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_coach_turn_arrows.py"
+    },
+    {
+      "path": "tools/assets/icons/png/coach_turn_cw_r.png",
+      "sha256": "78fc3dc45f18922dbcb6ab12f34974391a675c01f0d296c48c06769e4964f7bc",
+      "size": [
+        128,
+        128
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_coach_turn_arrows.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_1.png",
+      "sha256": "c29a619cd9327c23bf2998a29b97f4f69ef4ee63e2a5bcf332e2863d7713e9f9",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_2.png",
+      "sha256": "ba9b5627c942e154909b51315d4b8d47d187b1758317b933bf9f602a5e2d9517",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_3.png",
+      "sha256": "938efd2ce614331715c1843deb3aa1cadfaf1156f769bfba1a9108badd792d61",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_4.png",
+      "sha256": "b6b2b3344084ed82cd5375583eafa0c38242a905d45e44c540a393c912b81d50",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_5.png",
+      "sha256": "c3706f1cce4030f68def331b6c966acaed561f28601f14d29bbbc1531a17afb7",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_6.png",
+      "sha256": "3d1dc39c843ae6db0fb930065c60986d9700c4c3c5b63d858661e9495af44209",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/digit_7.png",
+      "sha256": "be3b1f280ef340bd7684f787948fca3eb71c00e6cdcb518d4f175c49f0a58e43",
+      "size": [
+        132,
+        132
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_digits.py"
+    },
+    {
+      "path": "tools/assets/icons/png/hero_alert.png",
+      "sha256": "a1a2365b8dd75901b5902f0a20658baf7186811002424a41db8cdd6e321d4a55",
+      "size": [
+        28,
+        28
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/hero_batt.png",
+      "sha256": "9ae477891665be48cbf3a7a3c22c558c30f183d01f6ebfcdae69f40e99596e67",
+      "size": [
+        104,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_hero_batt.py"
+    },
+    {
+      "path": "tools/assets/icons/png/hero_check.png",
+      "sha256": "0fd0474c6e71aba25421252347c3a1fe4b3f3198abe490b8b5fbf1839a2536ea",
+      "size": [
+        104,
+        104
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_hero_check.py"
+    },
+    {
+      "path": "tools/assets/icons/png/hero_hotspot.png",
+      "sha256": "e2d77748805b1ab113b4ccd275a32abac30013fef368cefa8bfc1f0b4b9917f6",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_hero_hotspot.py"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_auto.png",
+      "sha256": "93bd5c64f1dda23e4986d595f998325ebe8618e1b0f70d8347e37b5190933fb8",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_cool.png",
+      "sha256": "025bdd45205482dbc8b8213e998a7d97833d045c408d6dbedec37b4305a7ee7a",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_dry.png",
+      "sha256": "f824a438fb650051a416cf38dafc4cbc096fbd6d990669c22709920aee819861",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_fan.png",
+      "sha256": "65c0726f9d7f982f37c376c1c0908b10f264be7e23d894af436058aa1b5945e3",
+      "size": [
+        86,
+        86
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_heat.png",
+      "sha256": "6134a6cda79a231b6abe77dd90ea0b73a9751644e387d378025b2c03b9e23946",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/mode_off.png",
+      "sha256": "99f1f01404595f64fed5cc15f27bad265abbc9826632382a9c29027c53373627",
+      "size": [
+        80,
+        80
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/nav_back.png",
+      "sha256": "f75ec94fa877fec6b8827446af967d3b51e205d63dc6baec16f802611e4dee19",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/nav_gear.png",
+      "sha256": "ee9846b2710e098159e216862c41d54af7a3613472b75638b9d2bbf89bd29ec2",
+      "size": [
+        86,
+        86
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/nav_mode_mark.png",
+      "sha256": "5bdb79e09c491a9104808ab4143fb246b389d0e316d79689cd5106f6c2c16fb8",
+      "size": [
+        86,
+        86
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/nav_temp.png",
+      "sha256": "45b0314dc4f50f84bc42c8febdcdb987546c74df6ea3209774aa1b7992dcda9f",
+      "size": [
+        86,
+        86
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/room_heatpump.png",
+      "sha256": "2baca91e976c8c10b375c2b185429799c804dfb5fafb8622c44dd6cf533280d2",
+      "size": [
+        240,
+        240
+      ],
+      "origin": "Rendered from tools/icon_sources/room_heatpump.svg with CairoSVG 2.8.2.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_room_source_icons.py"
+    },
+    {
+      "path": "tools/assets/icons/png/room_link.png",
+      "sha256": "7f57ecfd5c88c409910be25e08294295cbb08e8adafb98239cbe8b5d59980902",
+      "size": [
+        240,
+        240
+      ],
+      "origin": "Rendered from tools/icon_sources/room_link.svg with CairoSVG 2.8.2.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_room_source_icons.py"
+    },
+    {
+      "path": "tools/assets/icons/png/room_sensor.png",
+      "sha256": "2b5f956278c8cf4d4673e3126de7950c500c6fc3f7e4151535575cdbc88adb3e",
+      "size": [
+        240,
+        240
+      ],
+      "origin": "Rendered from tools/icon_sources/room_sensor.svg with CairoSVG 2.8.2.",
+      "license": "MIT",
+      "authoring_recipe": "tools/gen_room_source_icons.py",
+      "notice": "tools/icon_sources/room_sensor.LICENSE"
+    },
+    {
+      "path": "tools/assets/icons/png/serin_logo.png",
+      "sha256": "25a6ff65ae9fafb55dcbafe5a2acc84dec0fc778c65b04b1d4f280b3f87d3909",
+      "size": [
+        180,
+        192
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only",
+      "trademark": "Serin logo; trademark rights are reserved."
+    },
+    {
+      "path": "tools/assets/icons/png/set_advanced.png",
+      "sha256": "47db1fd1a99ac16eabec15caccc41c2ec94fa33174289360d35cfea96f131533",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_advanced.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_brightness.png",
+      "sha256": "e1eb7e9892e79317bd0fe69a2a09b27a4ffdec316a8af35a273acf1a1fbe41cc",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/set_homekit.png",
+      "sha256": "01fe9e664895a38466c5d7aebbc4393f068fb68a01bdd051455110eef22f4305",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/set_idle.png",
+      "sha256": "3885b27b0b325388219355a43f7ccb0d4c249824154a8b4c37861b197e30069c",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_idle.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_link_row.png",
+      "sha256": "64e68e16c0bc7a8e3bf26fdcc4172b153fc5d2757c1426d5acd4cc718ba95369",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/set_lock.png",
+      "sha256": "502f2082c9adf63698192afe2b3a3e5ac74ac7841a50ad683af293715c360aca",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_lock.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_night.png",
+      "sha256": "2168922da912294872724a9e173ef54224b3880e04147c6d45b76faa885ffabd",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_night.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_reset.png",
+      "sha256": "279f4298bd2877beb316508f27aece94a032664931275e3d9d1cb964f14e544e",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "PNG input with procedural recipe; retained raster.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_reset.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_system_chip.png",
+      "sha256": "eb10b51da423fc72485e5160192549362501af5c044718cf0e6adf1b03a61081",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/set_transitions.png",
+      "sha256": "68f89293d5ff09b886c13472df26cb04a9b2ff8b377f3f99c5f74102dd41bb12",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Rendered from procedural recipe with Pillow 12.3.0.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_set_transitions.py"
+    },
+    {
+      "path": "tools/assets/icons/png/set_units.png",
+      "sha256": "bcd09cf40a6eacbf41ad67fde559b094821e40a7aaab4187eb7e655032eb3e06",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/set_wifi.png",
+      "sha256": "2acf97a80728dbaa393f4d6f8676db87b113c0080dfbac1da61faae67e0aa657",
+      "size": [
+        52,
+        52
+      ],
+      "origin": "Recovered bake-resolution raster; original larger PNG unavailable.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_auto.png",
+      "sha256": "a1fdd68984de47d81afdd230f23bcaad5cf723f178f69e1f9f8b47540131fe3d",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_center.png",
+      "sha256": "39117006e144019a06b5fc7d0cdfd44b416875d5e72bb8a82baf7467011ba9f1",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_cleft.png",
+      "sha256": "20927e721786987c47ee8bb0eda0c40c0f3c5e8a86685f33e3315b2f9fcbf6fe",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_cright.png",
+      "sha256": "15c875379cbb6ef6c99dd7e4ebb604ad271ae5788eb8a1b36ac9c632bcb8ad02",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_left.png",
+      "sha256": "ef55a6826e8e18fc95f78a8d6579a2f1fd5941ea88457a3e6a3b664a7bfdebe0",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_right.png",
+      "sha256": "bfc68e9fdeea256a887bd77b724be57445dec0c79881078eed268a9216b386b2",
+      "size": [
+        978,
+        207
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_h_swing.png",
+      "sha256": "27730483d451f5fdf88eeb2a94c40973f7228a3f739abb5ee6f507c8c079177f",
+      "size": [
+        978,
+        471
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_1.png",
+      "sha256": "30629aff3acb655c9324eaa30eaf9794f41b752fc1e4cfc788d765bf77414815",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_2.png",
+      "sha256": "448fb483484b5921dfd66d8caa26563177fef0ca5ca6fddf8de8fcc2dfabc3e5",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_3.png",
+      "sha256": "309bcc58da49ba1abe7123323b2a3e353d0f16502bc1d6d38197e67888aff537",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_4.png",
+      "sha256": "aecae66b816458a13e5fd8eb079ec9d86640f3b8137b8671ebbbb5acb2847f3e",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_5.png",
+      "sha256": "cde028c9d168207c56154cb4b0e61b7809ed7bc45e2c54ad7f08e790c96f2521",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_auto.png",
+      "sha256": "888f555b20fb1713705806ea28e3748224d69f9598de3e854dc093f2c4addb74",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/png/vane_v_swing.png",
+      "sha256": "72485e70c031149e3f6d41fdeeb971ea26f04f3b60fc9dc46910b331dd39d13c",
+      "size": [
+        960,
+        960
+      ],
+      "origin": "Retained PNG; SVG geometry in tools/assets/icons/svg/.",
+      "license": "GPL-3.0-only",
+      "authoring_recipe": "tools/gen_vane_masters.py"
+    },
+    {
+      "path": "tools/assets/icons/svg/hero_batt.svg",
+      "sha256": "fbfef0ae31a49fd0394172bede257d2bc1b424a8379c7dabe07e5f94fdeeca5b",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_auto.svg",
+      "sha256": "8280cd92a477fafadd895ff5d8f9f59815c32018b882af2654838cbd95d61b36",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_center.svg",
+      "sha256": "ad384403da228c1b36054d08c8d6090237260d1b6eb438ae07d60e2edf4fa7a2",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_cleft.svg",
+      "sha256": "d9f43b2d32b3066f6819d0027ac973e2633aaae99214645026f43ab03315354d",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_cright.svg",
+      "sha256": "6b405605e55c8d608b0630e6b4c2898c000718f3b19054ecda574ffaf59e3ea9",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_left.svg",
+      "sha256": "f8e88ae0647bc994b71f979e036bc389849f096c74b8f78780aff93e84ee6d91",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_right.svg",
+      "sha256": "c08bd76c107415b07472c0d57586fc8dd8ba976bdebaab3bc8626dab257bab2e",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_h_swing.svg",
+      "sha256": "bebbcbf54818e5212695773d485f707611d4a8f80ba33abcfd211ac4eadc03d5",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_1.svg",
+      "sha256": "1450748457cad978e520760d209432869b56cc2d62c9dffb3ca60b0cdccff039",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_2.svg",
+      "sha256": "0ba1c57e4db42128d05f89100aa2016d6137f88c7fea545dc2eb8e5bb05ade43",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_3.svg",
+      "sha256": "dae0c72524ff807a6e67dba1bf9d67fb49bb3887b87067db0e5a7963845dab81",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_4.svg",
+      "sha256": "17d4fcd3cd1e96e096dfcf27ba88b4e7b8f0b59b380065f08efb25b6cb61db98",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_5.svg",
+      "sha256": "8a3c9704331612e684c569fe010340ca39a806c9db540f698a247a8269214cb1",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_auto.svg",
+      "sha256": "e98213e7807632125e6245644fea21fc366e84db75bbcc7e463941f1cdf3fe55",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/assets/icons/svg/vane_v_swing.svg",
+      "sha256": "cb829eaa1b081ecb3a9493b1c4655db87d063649a5840e29891edcfd927d9cc0",
+      "origin": "Project SVG geometry.",
+      "license": "GPL-3.0-only"
+    },
+    {
+      "path": "tools/PlusJakartaSans-Medium.ttf",
+      "sha256": "c77bab757d7402ec6d9341d5f7ddaafb2474e17026792697ba4624c7dc89caf7",
+      "upstream": "https://github.com/tokotype/PlusJakartaSans/blob/6d4ffaf7a0c04a1bc2f31be2f1069e84d2433797/fonts/ttf/PlusJakartaSans-Medium.ttf",
+      "license": "OFL-1.1",
+      "notice": "tools/PlusJakartaSans-OFL.txt"
+    },
+    {
+      "path": "tools/PlusJakartaSans-SemiBold.ttf",
+      "sha256": "65dbcedb6596a41c30869729eb31cb57d1f5edfe365684314bba8a1994eaa4cb",
+      "upstream": "https://github.com/tokotype/PlusJakartaSans/blob/6d4ffaf7a0c04a1bc2f31be2f1069e84d2433797/fonts/ttf/PlusJakartaSans-SemiBold.ttf",
+      "license": "OFL-1.1",
+      "notice": "tools/PlusJakartaSans-OFL.txt"
+    },
+    {
+      "path": "tools/PlusJakartaSans-ExtraBold.ttf",
+      "sha256": "7d60d21b5dec501c77437e80aabd539f1d7a7b0ac7d4ada361d4d42abc7c55ea",
+      "upstream": "https://github.com/tokotype/PlusJakartaSans/blob/6d4ffaf7a0c04a1bc2f31be2f1069e84d2433797/fonts/ttf/PlusJakartaSans-ExtraBold.ttf",
+      "license": "OFL-1.1",
+      "notice": "tools/PlusJakartaSans-OFL.txt"
+    }
+  ]
+}

@@ -114,6 +114,10 @@ static zone_t s_z[ESPNOW_MAX_BONDS];
 static int          s_zn;
 static volatile int s_active;
 static volatile int s_zone_req = -1;
+/* Published by link_task after applying the selected bonded controller's
+ * STATE. OTA reads this single 32-bit snapshot, not mutable zone/UI fields.
+ * Zero means no applied STATE for the selection; hold grace never renews it. */
+static _Atomic uint32_t s_ota_state_rx_ms;
 
 static struct sl2_room_source_entry s_catalog[SL2_ROOM_CATALOG_MAX];
 static uint8_t  s_catalog_count;
@@ -520,7 +524,7 @@ static void night_sync(void) {
     lvgl_port_unlock();
 }
 
-static void apply_state(int zi, const struct sl2_state_pkt *p) {
+static void apply_state(int zi, const struct sl2_state_pkt *p, uint32_t received_ms) {
     zone_t *z = &s_z[zi];
     if (zi == s_active) sweep_backoff_reset();
     bool epoch_moved = z->epochSync && p->epoch && p->epoch != z->epochSync;
@@ -591,6 +595,8 @@ static void apply_state(int zi, const struct sl2_state_pkt *p) {
     s.sub_mode = action_substate_str(p->action);
     z->st = s; z->synced = true;
     if (is_active) {
+        /* This applied event's receipt, not a newer callback's queued STATE. */
+        atomic_store(&s_ota_state_rx_ms, received_ms);
         espnow_offline_alert_reset(&s_offline_alert);
         s_use_f = use_f;
         ui_set_state(&s);
@@ -742,7 +748,7 @@ static void handle_evt(evt_t *it) {
     case SL2_PKT_STATE: {
         struct sl2_state_pkt p;
         sl2_decode_pkt(&p, sizeof p, data, len);
-        apply_state(it->zi, &p);
+        apply_state(it->zi, &p, it->received_ms);
         break;
     }
     case SL2_PKT_CAPS: {
@@ -827,6 +833,7 @@ static void evt_post(uint8_t kind, int zi, const void *buf, size_t len,
     it.kind = kind;
     it.zi   = (uint8_t)zi;
     it.len  = (uint8_t)len;
+    it.received_ms = 0;
     memcpy(it.data, buf, len);
     if (!espnow_events_post(&s_evq, &it))
         ESP_LOGW(TAG, "event queue full — %s dropped", what);
@@ -906,13 +913,14 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     }
     if (s_pairing || s_ota_hold) return;
     if (len > (int)sizeof ((evt_t *)0)->data) return;
+    const uint32_t received = ms_stamp(now_ms());
     evt_t it;
     it.kind = EV_RX;
     it.zi   = (uint8_t)zi;
     it.len  = (uint8_t)len;
+    it.received_ms = received;
     memcpy(it.data, data, (size_t)len);
     if (!espnow_events_post(&s_evq, &it)) { s_rx_drop++; return; }
-    const uint32_t received = ms_stamp(now_ms());
     z->lastRxMs = received;
     if (espnow_state_reply(data, len)) {
         z->lastStateCh = s_radio_ch;
@@ -1019,7 +1027,10 @@ static uint8_t probe_want(int zi, uint8_t wi) {
         w |= SL2_WANT_CAPS;
     if (espnow_want_state(now_ms(), s_z[zi].lastRxMs, s_z[zi].synced))
         w |= SL2_WANT_STATE;
-    if (s_ps_applied_min) w |= SL2_WANT_STATE;
+    /* An unchanged controller may otherwise send only a 10 s heartbeat.
+       Verification needs actual STATE contact throughout its 30 s window. */
+    if (s_ps_applied_min || (zi == s_active && link_ota_soaking()))
+        w |= SL2_WANT_STATE;
     return w;
 }
 
@@ -1117,6 +1128,7 @@ static void do_zone_switch(int ni) {
     if (flush_due) cmd_tx(s_active, &flushc);
     s_tx_sent_temp = -1000; s_tx_sent_lo = s_tx_sent_hi = -1000; s_tx_sent_fan = -1000;
     int oi = s_active;
+    atomic_store(&s_ota_state_rx_ms, 0);
     s_active = ni;
     espnow_offline_alert_reset(&s_offline_alert);
     prefs_set_u8("activeZone", (uint8_t)ni);
@@ -1970,7 +1982,11 @@ static void install_bond_peers(void) {
                  CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM);
 }
 
-bool espnow_client_link_alive(void) { return s_radio_up && s_link_task_up; }
+bool espnow_client_link_alive(void) {
+    uint32_t received = atomic_load(&s_ota_state_rx_ms);
+    return received != 0 &&
+           (uint32_t)(now_ms() - received) < ESPNOW_ACK_WIN_ACTIVE_MS;
+}
 
 #define RADIO_PS_PREF     "radio_ps"
 #define RADIO_PS_IV_PREF  "radio_ps_iv"

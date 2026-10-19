@@ -1,0 +1,2 @@
+# Screenshot/layout assertions; no ESP-IDF Python environment required.
+Pillow==12.3.0

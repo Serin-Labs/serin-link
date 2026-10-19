@@ -30,6 +30,10 @@ void espnow_client_wifi_setup(void);
 void espnow_client_wifi_setup_session(uint32_t session);
 void espnow_client_wifi_cancel(uint32_t session);
 
+/* OTA health: a compatible STATE from the selected bonded controller was
+   received less than 4 s ago and applied by link_task. Uses an atomic snapshot;
+   radio ACKs, cached state, and heat-pump connection/fault flags do not decide
+   this result. Selection changes require a new applied STATE. */
 bool espnow_client_link_alive(void);
 
 void    espnow_client_self_mac(uint8_t out[6]);

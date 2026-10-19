@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 15 px
  * Bpp: 4
- * Opts: --font /tmp/PlusJakartaSans-ExtraBold.ttf --size 15 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x20-0x7F --range 0x00B7 --range 0x2026 -o jakarta_800_15.c
+ * Opts: --font tools/PlusJakartaSans-ExtraBold.ttf --size 15 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x20-0x7F --range 0x00B7 --range 0x2026 -o main/fonts/jakarta_800_15.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

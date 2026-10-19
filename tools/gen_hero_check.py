@@ -12,7 +12,7 @@ so gen_icons.py emits the variant byte-identical and mkicon() draws at ~1:1.
 The geometry is authored in 64-space and scaled, so the stroke weight stays
 proportional at any BAKE.
 
-    python3 tools/gen_hero_check.py     # writes icon_masters/icon_assets/png/hero_check.png
+    python3 tools/gen_hero_check.py     # writes tools/assets/icons/png/hero_check.png
 """
 import os
 
@@ -23,7 +23,7 @@ SS = 16
 K = BAKE / 64
 NAME = "hero_check"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 def main():
     s = BAKE * SS

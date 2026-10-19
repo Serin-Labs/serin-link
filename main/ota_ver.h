@@ -7,30 +7,52 @@
 #include <stdio.h>
 #include <string.h>
 
-static inline int ota_pre_num(const char *s)
+/* esp_app_desc_t.version includes its NUL in these 32 bytes. */
+#define OTA_VERSION_LEN 32
+
+/* Return the suffix after three unsigned decimal components. Callers that
+   accept a running build's v/V prefix strip it first. */
+static inline const char *ota_ver_core_end(const char *v)
 {
-    const char *dash = strchr(s, '-');
-    if (!dash) return -1;
-    const char *dot = strrchr(dash, '.');
-    int n = 0;
-    if (dot && sscanf(dot + 1, "%d", &n) == 1) return n;
-    return 0;
+    for (int i = 0; i < 3; i++) {
+        size_t n = strspn(v, "0123456789");
+        if (!n) return NULL;
+        v += n;
+        if (i < 2 && *v++ != '.') return NULL;
+    }
+    return v;
+}
+
+/* Compare decimal spans without converting to a machine integer. Published
+   versions can fill the descriptor even when a component exceeds INT_MAX. */
+static inline int ota_ver_num_cmp(const char *a, const char *b)
+{
+    while (*a == '0') a++;
+    while (*b == '0') b++;
+    size_t an = strspn(a, "0123456789"), bn = strspn(b, "0123456789");
+    if (an != bn) return an > bn ? 1 : -1;
+    return strncmp(a, b, an);
 }
 
 static inline int ota_ver_cmp(const char *a, const char *b)
 {
     if (*a == 'v' || *a == 'V') a++;
     if (*b == 'v' || *b == 'V') b++;
-    int x[3] = {0}, y[3] = {0};
-    if (sscanf(a, "%d.%d.%d", &x[0], &x[1], &x[2]) != 3) return 0;
-    if (sscanf(b, "%d.%d.%d", &y[0], &y[1], &y[2]) != 3) return 0;
-    for (int i = 0; i < 3; i++)
-        if (x[i] != y[i]) return x[i] - y[i];
-    int pa = ota_pre_num(a), pb = ota_pre_num(b);
-    if (pa == pb) return 0;
-    if (pa < 0) return 1;
-    if (pb < 0) return -1;
-    return pa - pb;
+    if (!ota_ver_core_end(a) || !ota_ver_core_end(b)) return 0;
+    for (int i = 0; i < 3; i++) {
+        int cmp = ota_ver_num_cmp(a, b);
+        if (cmp) return cmp;
+        a += strspn(a, "0123456789");
+        b += strspn(b, "0123456789");
+        if (i < 2) { a++; b++; }
+    }
+    const char *pa = strchr(a, '-'), *pb = strchr(b, '-');
+    if (!pa || !pb) return (pb != NULL) - (pa != NULL);
+    pa = strrchr(pa, '.');
+    pb = strrchr(pb, '.');
+    /* Keep existing prerelease ordering: the final number determines order,
+       regardless of label; a bench tail with no number reads as zero. */
+    return ota_ver_num_cmp(pa ? pa + 1 : "0", pb ? pb + 1 : "0");
 }
 
 /* A release-channel pre-release is exactly maj.min.patch-word.N. A git-describe
@@ -38,14 +60,26 @@ static inline int ota_ver_cmp(const char *a, const char *b)
 static inline bool ota_ver_is_prerelease(const char *v)
 {
     if (*v == 'v' || *v == 'V') v++;
-    int x[3], n = 0;
-    if (sscanf(v, "%d.%d.%d-%n", &x[0], &x[1], &x[2], &n) != 3 || n == 0) return false;
-    const char *p = v + n;
+    const char *p = ota_ver_core_end(v);
+    if (!p || *p++ != '-') return false;
     if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) return false;
     while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) p++;
     if (*p++ != '.' || *p < '0' || *p > '9') return false;
     while (*p >= '0' && *p <= '9') p++;
     return *p == '\0';
+}
+
+/* The publisher's exact grammar: maj.min.patch[-word.N], at most 31 ASCII
+   bytes. Do not accept v/V or other aliases for an incoming release. Check
+   termination before any parser reads the downloaded descriptor as a string. */
+static inline bool ota_ver_is_release(const char *v)
+{
+    if (!v) return false;
+    size_t n = 0;
+    while (n < OTA_VERSION_LEN && v[n]) n++;
+    if (n == OTA_VERSION_LEN) return false;
+    const char *end = ota_ver_core_end(v);
+    return end && (*end == '\0' || ota_ver_is_prerelease(v));
 }
 
 static inline int ota_hexval(char c)
@@ -62,11 +96,27 @@ typedef enum {
     OTA_GUARD_ROLLBACK,
 } ota_guard_act_t;
 
-static inline ota_guard_act_t ota_guard_decide(int64_t up_ms, bool healthy,
-                                               int64_t soak_ms, int64_t deadline_ms)
+typedef struct {
+    int64_t healthy_since_ms; /* Initialize to -1: no healthy observation yet. */
+    int64_t last_poll_ms;
+} ota_guard_t;
+
+/* Link health is sampled, not a guarantee between polls. A missed observation
+   window starts a new streak. rendered is sticky evidence of one UI frame,
+   independent of the link streak; it does not prove ongoing UI health. */
+static inline ota_guard_act_t ota_guard_decide(ota_guard_t *guard, int64_t up_ms,
+                                               bool link, bool rendered, int64_t soak_ms,
+                                               int64_t deadline_ms, int64_t max_poll_gap_ms)
 {
-    if (healthy && up_ms >= soak_ms) return OTA_GUARD_VALID;
-    if (up_ms >= deadline_ms)        return OTA_GUARD_ROLLBACK;
+    if (up_ms >= deadline_ms) return OTA_GUARD_ROLLBACK;
+    if (!link || up_ms - guard->last_poll_ms > max_poll_gap_ms)
+        guard->healthy_since_ms = -1;
+    guard->last_poll_ms = up_ms;
+    if (link) {
+        if (guard->healthy_since_ms < 0) guard->healthy_since_ms = up_ms;
+        if (rendered && up_ms - guard->healthy_since_ms >= soak_ms)
+            return OTA_GUARD_VALID;
+    }
     return OTA_GUARD_WAIT;
 }
 

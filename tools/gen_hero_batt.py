@@ -3,10 +3,10 @@
 # Copyright (C) 2026 Mehmet Bayram
 """Rebuild hero_batt's PNG master from its SVG — the one surviving vector.
 
-hero_batt.svg (icon_masters/icon_assets/svg/) is the only icon whose true
-vector master survived; every other master in icon_masters/icon_assets/png/
-is a bake-resolution recovery (see the README there). This script re-rasters
-the SVG into that PNG set, and gen_icons.py bakes it like any other icon.
+hero_batt.svg lives in tools/assets/icons/svg/. Other surviving vectors and
+procedural recipes are documented in tools/assets/README.md; some older icons
+have only recovered bake-resolution PNG sources. This script re-rasters the
+battery geometry into that PNG set, and gen_icons.py bakes it like any icon.
 
 The SVG is three rounded rects, so it is rasterised directly with Pillow
 rather than an SVG library — no cairosvg, no `currentColor` pitfall. Drawn at
@@ -47,6 +47,6 @@ def render_alpha():
 if __name__ == "__main__":
     alpha = render_alpha()
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "icon_masters", "icon_assets", "png", NAME + ".png")
+                       "tools", "assets", "icons", "png", NAME + ".png")
     Image.merge("RGBA", (*(Image.new("L", alpha.size, 255),) * 3, alpha)).save(out)
     print(f"wrote {out} — now run: python3 tools/gen_icons.py")

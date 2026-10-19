@@ -11,7 +11,7 @@ large, downscaled to kill jaggies. Each numeral is centered on an identical
 square 132x132 canvas so every digit shares one footprint (uniform node size
 on the rim) and the 46/66 bakes in gen_icons.py are clean downscales.
 
-    python3 tools/gen_digits.py   # writes icon_masters/icon_assets/png/digit_N.png
+    python3 tools/gen_digits.py   # writes tools/assets/icons/png/digit_N.png
 """
 import os
 
@@ -22,7 +22,7 @@ SS = 8
 GLYPH_FRAC = 0.72
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TTF = os.path.join(ROOT, "tools", "PlusJakartaSans-SemiBold.ttf")
-PNGDIR = os.path.join(ROOT, "icon_masters", "icon_assets", "png")
+PNGDIR = os.path.join(ROOT, "tools", "assets", "icons", "png")
 
 def render_digit(ch):
     s = BAKE * SS

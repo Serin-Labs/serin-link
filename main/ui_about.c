@@ -139,7 +139,7 @@ void refresh_update(void)
             snprintf(ver, sizeof ver, "v%s \xE2\x86\x92 v%s", cur, s_ota_txt);
             snprintf(big, sizeof big, "Installed");
             bigcol = COL_GREEN;
-            cap = "Restarting. Keep the dial plugged in for 30 seconds";
+            cap = "Restarting. " LINK_OTA_SOAK_MSG;
             icn = &serin_logo; icol = COL_HEAT_GLOW; ipx = 60;
             break;
         case OTA_UI_UPTODATE:

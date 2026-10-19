@@ -195,8 +195,7 @@ config SERIN_PERF_STATS
         Use perf-reset/perf-dump for explicit measurement windows,
         perf-glide/perf-nav for scripted workloads, and perf-pm for PM locks.
         There is no periodic reporting task after console registration.
-        Enable via the sdkconfig.perf overlay, e.g.
-        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.viewe;sdkconfig.perf".
+        Enable in a separate build directory's sdkconfig.
         Do not use LV_USE_PERF_MONITOR instead — it counts refr ticks, not
         redraws, on this stack.
 
@@ -233,79 +232,5 @@ config SERIN_LINK_OTA_MANIFEST_BETA_URL
         installed from a beta image is not offered the older stable release;
         `ota-channel stable` stores an explicit opt-out. Leave empty to compile
         the channel out: `ota-channel beta` is then refused.
-
-config SERIN_THERMAL_CAL
-    bool "Thermal calibration rig (calibration builds only)"
-    depends on SERIN_SHT40 && SERIN_BOARD_VIEWE_15
-    default n
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_DISPLAY_TEST
-    bool "Display-control verification cycle (instead of the sweep)"
-    depends on SERIN_THERMAL_CAL
-    default n
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_PROFILE_SHORT
-    bool "Short profile: 4 regimes (~2.7 h) instead of 9 (~6.5 h)"
-    depends on SERIN_THERMAL_CAL
-    default n
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_DWELL_MIN
-    int "Regime dwell (minutes)"
-    depends on SERIN_THERMAL_CAL
-    default 20
-    range 2 120
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_BASELINE_MIN
-    int "Baseline dwell between regimes (minutes)"
-    depends on SERIN_THERMAL_CAL
-    default 20
-    range 2 120
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_SETTLE_MIN
-    int "Initial settle before the first step (minutes)"
-    depends on SERIN_THERMAL_CAL
-    default 30
-    range 0 120
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_RING_RECS
-    int "PSRAM ring depth (records of 32 bytes)"
-    depends on SERIN_THERMAL_CAL
-    default 4096
-    range 256 32768
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_WIFI_SSID
-    string "Wi-Fi SSID for the radio regimes"
-    depends on SERIN_THERMAL_CAL
-    default ""
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_WIFI_PSK
-    string "Wi-Fi password for the radio regimes"
-    depends on SERIN_THERMAL_CAL
-    default ""
-    help
-        Thermal calibration build setting.
-
-config SERIN_CAL_LOAD_URL
-    string "URL fetched in a loop for the sustained-radio regime"
-    depends on SERIN_THERMAL_CAL
-    default "https://raw.githubusercontent.com/Serin-Labs/serin-cn105/main/firmware/link/ota/stable/manifest.json"
-    help
-        Thermal calibration build setting.
 
 endmenu

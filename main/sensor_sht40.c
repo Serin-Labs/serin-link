@@ -193,19 +193,6 @@ bool sensor_sht40_read(int16_t *temp_cc, uint16_t *hum_cc, uint32_t *age_ms)
     return true;
 }
 
-#if CONFIG_SERIN_THERMAL_CAL
-bool sensor_sht40_read_raw(int16_t *temp_cc, uint16_t *hum_cc, uint32_t *age_ms)
-{
-    if (!s_present || !s_valid) return false;
-    if (temp_cc) *temp_cc = s_temp_cc;
-    if (hum_cc)  *hum_cc  = s_hum_cc;
-    if (age_ms) {
-        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        *age_ms = now_ms - s_stamp_ms;
-    }
-    return true;
-}
-#endif
 
 int16_t sensor_sht40_offset_cc(void) { return offset_eff(); }
 

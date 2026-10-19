@@ -12,7 +12,7 @@ import cairosvg
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "tools" / "icon_sources"
-PNG = ROOT / "icon_masters" / "icon_assets" / "png"
+PNG = ROOT / "tools" / "assets" / "icons" / "png"
 PNG.mkdir(parents=True, exist_ok=True)
 
 for name in ("room_heatpump", "room_link", "room_sensor"):

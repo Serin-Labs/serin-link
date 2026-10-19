@@ -46,9 +46,10 @@ sliced from the merged image, never built separately, so the two cannot differ.
 --split-existing adds parts to an already published release without a rebuild.
 --channel beta stages pre-release factory images to dist_factory/beta/, for
 firmware/link/factory/beta/ in the distribution repo.
-factory-manifest.json records a `dirty` flag, which
-is true when HEAD is not an exact tag or the tracked tree has edits, so a
-downstream flashing step can refuse a build that is not a release.
+Production staging requires clean source at v<version> and build receipts
+binding source, configuration and exact output hashes. --no-build verifies
+those receipts; --split-existing preserves the original recorded provenance.
+Development staging permits dirty/untagged source in separate output directories.
 """
 import argparse
 import contextlib
@@ -62,6 +63,8 @@ import subprocess
 import sys
 import tempfile
 from typing import NamedTuple
+
+import release_provenance as provenance
 
 try:
     import espsecure
@@ -78,26 +81,13 @@ BOARDS = {
     "viewe21":   "sdkconfig.defaults;sdkconfig.defaults.viewe21",
 }
 BIN_NAME = "serin_link.bin"
+# main/link_ota.c fetch_manifest reserves one byte of MANIFEST_MAX for NUL.
+OTA_MANIFEST_MAX = 4096
 
 # Board -> the id the dial matches against manifest `builds[].board`
 # (LINK_BOARD_ID in main/link_ota.c). Changing one orphans every dial already
 # running that board's firmware.
 PUBLIC_IDS = {"viewe15": "link15", "viewe21": "link21"}
-
-def _tree_dirty() -> bool:
-    """True if tracked files have uncommitted changes or HEAD is not exactly on a
-    tag — stamped into factory-manifest.json so a downstream flashing step can
-    refuse to treat a dirty/untagged build as a release. Untracked files are
-    ignored (matches `git describe --dirty` semantics). Fails safe (True) on any
-    git error."""
-    def _git(*a):
-        return subprocess.run(["git", *a], cwd=ROOT, capture_output=True, text=True)
-    try:
-        if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
-            return True
-        return _git("describe", "--tags", "--exact-match").returncode != 0
-    except Exception:
-        return True
 
 def merge_factory(bdir: pathlib.Path, out: pathlib.Path) -> None:
     """Merge existing flash inputs, without IDF's implicit build dependency."""
@@ -171,6 +161,7 @@ APP_DESC_OFFSET = 24 + 8
 APP_DESC_LEN = 256
 APP_DESC_MAGIC = 0xABCD5432
 APP_DESC_VERSION = slice(APP_DESC_OFFSET + 16, APP_DESC_OFFSET + 48)  # char version[32]
+APP_DESC_PROJECT = slice(APP_DESC_OFFSET + 48, APP_DESC_OFFSET + 80)  # char project_name[32]
 
 class TrustedKey(NamedTuple):
     """The public key every staged app must be signed by, and IDF's digest of it."""
@@ -226,8 +217,8 @@ def verify_signed_app(data: bytes, key: TrustedKey, label: str) -> None:
     except (ValueError, FatalError) as error:
         sys.exit(f"{label}: signature verification failed: {error}")
 
-def assert_app_version(data: bytes, expected: str, label: str) -> None:
-    """Check the descriptor in a verified signed app, never a build sidecar.
+def assert_app_identity(data: bytes, expected: str, board: str, label: str) -> None:
+    """Check the version and board in a verified signed app, never a build sidecar.
 
     https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32s3/api-reference/system/app_image_format.html
     """
@@ -250,6 +241,17 @@ def assert_app_version(data: bytes, expected: str, label: str) -> None:
                              "rebuild or select the matching --version")
     except ValueError as error:
         sys.exit(f"{label}: app version verification failed: {error}")
+    try:
+        raw, terminator, _ = payload[APP_DESC_PROJECT].partition(b"\0")
+        if not raw or not terminator:
+            raise ValueError("project name must be nonempty and null-terminated within 32 bytes")
+        actual = raw.decode("ascii")
+        expected_project = f"serin_link_{board}"
+        if actual != expected_project:
+            raise ValueError(f"embedded project {actual!r} does not match board {board!r} "
+                             f"({expected_project!r}); rebuild for the selected board")
+    except ValueError as error:
+        sys.exit(f"{label}: app project verification failed: {error}")
 
 def assert_factory_chain(bdir: pathlib.Path) -> None:
     """Refuse a build dir that isn't on the release chain — a stale sdkconfig
@@ -496,6 +498,34 @@ def main() -> int:
         sys.exit(f"{version} is a pre-release; publish it with --channel beta")
 
     boards = args.boards or sorted(BOARDS)
+    # Republished images belong to the original builder, never this checkout.
+    source_state = None if existing is not None else provenance.source_state(ROOT, version, args.development)
+    receipts = []
+    checked_builds = []
+
+    def record_build(bdir, board, kind, data):
+        inputs_hash = provenance.factory_inputs(bdir) if kind == "factory" else provenance.digest(data)
+        record = provenance.build_record(source_state, board, kind, version, args.development,
+                                         BOARDS[board], (bdir / "sdkconfig").read_bytes(), data, inputs_hash)
+        if args.no_build:
+            provenance.verify_receipt(bdir, record, data)
+        checked_builds.append((bdir, record))
+        if args.no_build:
+            return record
+        provenance.assert_source_unchanged(ROOT, version, args.development, source_state)
+        receipts.append((bdir, record))
+        return record
+
+    def finish_builds():
+        if existing is None:
+            provenance.assert_source_unchanged(ROOT, version, args.development, source_state)
+        for bdir, record in checked_builds:
+            if (provenance.digest((bdir / "sdkconfig").read_bytes()) != record["sdkconfig_sha256"]
+                    or (record["kind"] == "factory"
+                        and provenance.factory_inputs(bdir) != record["build_inputs_sha256"])):
+                sys.exit("Build configuration/inputs changed during release staging; rebuild")
+        for bdir, record in receipts:
+            (bdir / provenance.RECEIPT).write_text(json.dumps(record, indent=2) + "\n")
 
     if args.factory:
         out_dir = out
@@ -518,23 +548,42 @@ def main() -> int:
                     assert_board_calibration(bdir, board)
                 if not args.development:
                     assert_distribution_urls(bdir)
+                merge_inputs = provenance.factory_inputs(bdir)
+                merge_config = (bdir / "sdkconfig").read_bytes()
                 with tempfile.TemporaryDirectory(prefix="serin-factory-check-") as tmp:
                     merged = pathlib.Path(tmp) / asset
                     merge_factory(bdir, merged)
                     data = merged.read_bytes()
+                if (provenance.factory_inputs(bdir) != merge_inputs
+                        or (bdir / "sdkconfig").read_bytes() != merge_config):
+                    sys.exit("Factory build inputs/config changed during merge; rebuild")
             verify_signed_app(data[FACTORY_APP_OFFSET:], key, asset)
-            assert_app_version(data[FACTORY_APP_OFFSET:], version, asset)
-            builds.append(factory_entry(board, asset, data, artifacts))
+            assert_app_identity(data[FACTORY_APP_OFFSET:], version, board, asset)
+            built_entry = factory_entry(board, asset, data, artifacts)
+            if existing is not None:
+                record = provenance.validate_record(entry.get("provenance"), board, "factory", version,
+                                                     args.development, data)
+            else:
+                record = record_build(bdir, board, "factory", data)
+            builds.append({**built_entry, "provenance": record})
             print(f"{board}: factory {len(data)} B  {builds[-1]['sha256'][:12]}…")
+        if any(build["provenance"]["source"] != builds[0]["provenance"]["source"] for build in builds):
+            sys.exit("Factory builds have inconsistent original source provenance")
+        # Development artifacts always remain ineligible for production, even
+        # when the local tree happens to be clean and tagged.
+        dirty = args.development or any(build["provenance"]["source"]["dirty"] or
+                                        build["provenance"]["source"]["tag"] is None for build in builds)
+        if existing is not None and existing.get("dirty") is not dirty:
+            sys.exit("Factory manifest dirty flag differs from its original build provenance")
         # Validate every board before replacing any previous release artifact.
+        finish_builds()
         replace_artifacts(out_dir, artifacts, "serin_link_*.bin")
         # A republished release keeps its recorded provenance: the tree this
         # runs from says nothing about the tree those images were built from.
-        dirty = bool(existing.get("dirty", True)) if existing is not None else _tree_dirty()
         manifest = {"name": "Serin Link (factory)", "version": version}
         if args.channel == "beta":
             manifest["channel"] = "beta"
-        manifest.update({"dirty": dirty, "builds": builds})
+        manifest.update({"dirty": dirty, "development": args.development, "builds": builds})
         (out_dir / "factory-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"staged {out_dir} (version {version}) — merged factory images, "
               f"flashable at 0x0 with esptool, and their split parts")
@@ -558,26 +607,33 @@ def main() -> int:
             assert_distribution_urls(ROOT / f"build_pub_{board}")
         data = binary.read_bytes()
         verify_signed_app(data, key, str(binary))
-        assert_app_version(data, version, str(binary))
+        assert_app_identity(data, version, board, str(binary))
+        record = record_build(binary.parent, board, "ota", data)
         asset = f"{pid}-app.bin"
         artifacts[asset] = data
         builds.append({
             "board": pid,
+            "provenance": record,
             "path": asset,
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         })
         print(f"{board}: {len(data)} B  {builds[-1]['sha256'][:12]}…")
 
-    replace_artifacts(stage, artifacts, "*-app.bin")
-
     manifest = {
         "name": "Serin Link",
+        "development": args.development,
         "version": version,
         "channel": args.channel,
         "builds": builds,
     }
-    (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    if len(manifest_bytes) >= OTA_MANIFEST_MAX:
+        sys.exit(f"OTA manifest is {len(manifest_bytes)} bytes; device limit is {OTA_MANIFEST_MAX - 1}. "
+                 "Reduce the selected builds/metadata before staging")
+    finish_builds()
+    replace_artifacts(stage, artifacts, "*-app.bin")
+    (stage / "manifest.json").write_bytes(manifest_bytes)
 
     print(f"staged {stage} (version {version}, channel {args.channel})")
     for name in ["manifest.json", *artifacts]:

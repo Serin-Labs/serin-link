@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 56 px
  * Bpp: 4
- * Opts: --font /tmp/PlusJakartaSans-Medium.ttf --size 56 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x00B0 -o jakarta_500_56.c
+ * Opts: --font tools/PlusJakartaSans-Medium.ttf --size 56 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x00B0 -o main/fonts/jakarta_500_56.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

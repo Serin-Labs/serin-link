@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Mehmet Bayram
-"""Recover the icon masters from the baked A8 arrays in main/icons_serin.c.
+"""Export baked A8 descriptors as PNG previews, including current per-size variants.
 
-The designed PNG masters in icon_masters/icon_assets/png/ were never committed;
-only the baked output survived. The bakes are the artwork at 80-192px — larger
-than every display size — so decoding them back to PNGs re-establishes a master
-set that tools/gen_icons.py can consume. These recovered masters are
-bake-resolution, NOT the lost 2x originals (see the README written next to them).
+This is an inspection/migration utility, NOT the artwork regeneration pipeline.
+Exports contain already-resampled display pixels and cannot reconstruct a lost
+higher-resolution source. Public source masters live in tools/assets/icons/.
 
-Round-trip safety: for every icon, re-encoding the recovered PNG's alpha channel
-must reproduce the original byte array exactly. The tool asserts this itself.
-
-Usage: python3 tools/recover_icons.py [path/to/icons_serin.c]
+Usage: python tools/recover_icons.py [icons_serin.c] --out-dir /path/to/exports
 """
+import argparse
 import os
 import re
 import sys
@@ -21,8 +17,6 @@ import sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "main", "icons_serin.c")
-OUTDIR = os.path.join(ROOT, "icon_masters", "icon_assets", "png")
 
 MAP_RE = re.compile(
     r"static const uint8_t (\w+)_map\[\]\s*=\s*\{([^}]*)\};", re.S)
@@ -32,14 +26,6 @@ FIELD_RE = re.compile(r"\.header\.(w|h|stride)\s*=\s*(\d+)")
 
 def parse(src_text):
     """-> {name: (w, h, stride, bytes)} for every baked icon in the file."""
-    if "serin_icon_t" in src_text:
-        raise SystemExit(
-            "this looks like the per-size-variant format (serin_icon_t) — the\n"
-            "masters were already recovered and live in\n"
-            "icon_masters/icon_assets/png/. Recovering variant bakes would only\n"
-            "pollute that set with <name>_<px>_dsc.png files. If you really need\n"
-            "to re-run this, point it at the pre-variant icons_serin.c from git\n"
-            "history: git show 0406d5c~1:main/icons_serin.c > /tmp/old.c")
     maps = {m.group(1): bytes(
                 int(tok, 16) for tok in re.findall(r"0x[0-9A-Fa-f]{2}", m.group(2)))
             for m in MAP_RE.finditer(src_text)}
@@ -58,8 +44,16 @@ def parse(src_text):
     return icons
 
 def main():
-    os.makedirs(OUTDIR, exist_ok=True)
-    with open(SRC) as f:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", nargs="?", default=os.path.join(ROOT, "main", "icons_serin.c"))
+    parser.add_argument("--out-dir", required=True, help="destination for baked previews, never source masters")
+    args = parser.parse_args()
+    outdir = os.path.abspath(args.out_dir)
+    source_dir = os.path.join(ROOT, "tools", "assets", "icons")
+    if os.path.commonpath([os.path.realpath(outdir), source_dir]) == source_dir:
+        raise SystemExit("Export to a separate directory; baked variants must not replace source masters")
+    os.makedirs(outdir, exist_ok=True)
+    with open(args.source) as f:
         icons = parse(f.read())
     for name, (w, h, stride, data) in sorted(icons.items()):
         if len(data) != stride * h:
@@ -69,9 +63,9 @@ def main():
             *(Image.new("L", (w, h), 255),) * 3,
             Image.frombytes("L", (w, h), alpha)))
         assert im.split()[3].tobytes() == alpha, f"{name}: round-trip mismatch"
-        im.save(os.path.join(OUTDIR, name + ".png"))
-        print(f"recovered {name:20s} {w}x{h}")
-    print(f"wrote {len(icons)} masters to {OUTDIR}")
+        im.save(os.path.join(outdir, name + ".png"))
+        print(f"exported {name:20s} {w}x{h}")
+    print(f"exported {len(icons)} baked previews to {outdir}")
 
 if __name__ == "__main__":
     main()

@@ -451,7 +451,7 @@ void refresh_settings(void)
         chip_status(NULL, SS.lconn, lc, lt);
         if (s_zn_ui >= 1) {
             char nm[48]; zone_disp_name(s_zactive, nm, sizeof nm);
-            lv_label_set_text(SS.lmeta, nm);
+            ui_name_label(SS.lmeta, nm, FONT_STATUS, &jakarta_600_18_latin);
             ss_show(R_LMETA);
         }
         if (s_link.bonded) ss_show(R_LADD);
@@ -466,6 +466,7 @@ void refresh_settings(void)
             const char *nm = s->room_src_name[0] ? s->room_src_name :
                 ((s->room_src <= SL2_ROOMSRC_LINK) ? SRC_NAME[s->room_src] : "Internal");
             uint32_t col = s->room_src_status == SL2_ROOMST_OK ? COL_GREEN : COL_ALERT_WARN;
+            ui_name_label(SS.syconn, nm, FONT_DIAL_PILL, &jakarta_600_27_latin);
             chip_status(SS.sydot, SS.syconn, col, nm);
             if (s->room_src_status == SL2_ROOMST_STALE)
                 lv_label_set_text(SS.roomSrc, "Reading is stale");
@@ -479,6 +480,7 @@ void refresh_settings(void)
             if (room_source_can_enter()) lv_label_set_text(SS.hint, H_PRESS("choose source"));
             else                         ss_hide(R_HINT);
         } else {
+            ui_name_label(SS.syconn, "Internal", FONT_DIAL_PILL, &jakarta_600_27_latin);
             chip_status(SS.sydot, SS.syconn, COL_GREY, "Internal");
             lv_label_set_text(SS.roomSrc, "Controller does not offer source selection");
             ss_show(R_ROOMSRC);

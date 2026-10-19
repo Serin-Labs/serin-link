@@ -1,0 +1,2 @@
+# The checked-in PNG alpha sources are the reproducible icon inputs.
+Pillow==12.3.0

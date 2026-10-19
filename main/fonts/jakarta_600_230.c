@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 230 px
  * Bpp: 4
- * Opts: --font /tmp/PlusJakartaSans-SemiBold.ttf --size 230 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x30-0x39 --range 0x2014 -o jakarta_600_230.c
+ * Opts: --font tools/PlusJakartaSans-SemiBold.ttf --size 230 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x30-0x39 --range 0x2014 -o main/fonts/jakarta_600_230.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

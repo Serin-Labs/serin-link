@@ -35,6 +35,3 @@ sim/.cache/
 sim/.prefs
 /.prefs
 .venv/
-
-# Icon generator output
-icon_masters/

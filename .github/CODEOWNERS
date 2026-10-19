@@ -1,0 +1,5 @@
+# Code owners for serin-link.
+# GitHub requests a review from the owner of every path a pull request touches.
+# Syntax: https://docs.github.com/articles/about-code-owners
+
+*   @akifbayram

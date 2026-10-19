@@ -361,7 +361,7 @@ static void run(const scenario_t *s) {
         refresh_pairing_face();
         if (!title.text || strcmp(title.text, "Paired") != 0 || title.hidden)
             fail(s, "saved pairing was not displayed as Paired");
-        if (!hint.text || strcmp(hint.text, "Keep the dial plugged in for 30 seconds") != 0 || hint.hidden)
+        if (!hint.text || strcmp(hint.text, "Keep the dial powered while checking") != 0 || hint.hidden)
             fail(s, "pairing face did not explain restart refusal");
         soaking = false;
         refresh_pairing_face();
@@ -441,7 +441,7 @@ int main(void) {
         if (soak && rc != 0) fail(&s, "saved pairing reported as failed");
         if (bond_adds != 1 || memcmp(bond_added_lmk, NEW_LMK, 16) != 0)
             fail(&s, "new console bond was not stored");
-        if (soak && !strstr(console_output, "Keep the dial plugged in for 30 seconds"))
+        if (soak && !strstr(console_output, "Keep the dial powered while checking"))
             fail(&s, "console did not explain restart refusal");
         if (soak && strstr(console_output, "restarting"))
             fail(&s, "console promised a refused restart");

@@ -5,9 +5,10 @@
 #include <stdbool.h>
 
 /* After an update the new image is on probation (PENDING_VERIFY) until
-   link_ota.c's guard marks it valid, 30 s after boot at the earliest. Any
-   restart before then makes the bootloader bring the previous version back. */
-#define LINK_OTA_SOAK_MSG "Keep the dial plugged in for 30 seconds"
+   link_ota.c's guard observes 30 s of consecutive healthy link polls and at
+   least one UI frame, then successfully marks it valid. A restart while still
+   pending can roll back if a suitable previous image exists. */
+#define LINK_OTA_SOAK_MSG "Keep the dial powered while checking"
 
 /* Without SNTP, an update sets the wall clock to the build time (TLS date checks);
    until a real sync it is wrong, so nothing may read it as the time of day. */

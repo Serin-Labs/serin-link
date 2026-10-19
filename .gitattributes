@@ -1,0 +1,9 @@
+# Generated font and icon data.
+main/fonts/*.c linguist-generated=true
+main/icons_serin.c linguist-generated=true
+
+# Vendored source used by the simulator and compatibility tests.
+sim/stb_image_write.h linguist-vendored=true
+test/knob_power_save/upstream/iot_knob.c linguist-vendored=true
+test/knob_power_save/upstream/include/*.h linguist-vendored=true
+test/sl2_public_compat/upstream/sl2_proto.h linguist-vendored=true

@@ -55,6 +55,19 @@ lv_obj_t *mklabel(lv_obj_t *p, const lv_font_t *f, uint32_t c, const char *t)
     return l;
 }
 
+void ui_name_label(lv_obj_t *label, const char *name, const lv_font_t *ascii,
+                   const lv_font_t *latin)
+{
+    const lv_font_t *font = ascii;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p >= 0x80) { font = latin; break; }
+    }
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_height(label, lv_font_get_line_height(font));
+    lv_obj_set_style_max_height(label, lv_font_get_line_height(font), 0);
+    lv_label_set_text(label, name);
+}
+
 lv_obj_t *mkbody(lv_obj_t *p, const lv_font_t *f, uint32_t c, const char *t, int32_t w)
 {
     lv_obj_t *l = mklabel(p, f, c, t);

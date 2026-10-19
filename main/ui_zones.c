@@ -3,6 +3,7 @@
  */
 #include "ui_internal.h"
 #include "ui_rim.h"
+#include "ui_name.h"
 #include "icons.h"
 #include <stdio.h>
 #include <string.h>
@@ -47,7 +48,7 @@ static const char *zone_badge_txt(ui_zone_badge_t b) {
     }
 }
 void zone_disp_name(int i, char *out, size_t n) {
-    if (s_zinfo[i].name[0]) snprintf(out, n, "%s", s_zinfo[i].name);
+    if (s_zinfo[i].name[0]) ui_name_copy(out, n, s_zinfo[i].name, sizeof s_zinfo[i].name);
     else snprintf(out, n, "Zone %d %02X%02X", i + 1,
                   s_zinfo[i].mac[4], s_zinfo[i].mac[5]);
 }
@@ -104,7 +105,7 @@ void refresh_zones(void) {
         rim_tint(&ZR, i, zone_badge_col(s_zinfo[i].badge));
     }
     if (back) {
-        lv_label_set_text(ZP.name, "Back");
+        ui_name_label(ZP.name, "Back", FONT_SET_NAME, &jakarta_600_40_latin);
         lv_label_set_long_mode(ZP.name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_BACK), 0);
         lv_obj_add_flag(ZP.nowNum, LV_OBJ_FLAG_HIDDEN);
@@ -120,7 +121,7 @@ void refresh_zones(void) {
     lv_obj_remove_flag(ZP.badge, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_text_color(ZP.name, lv_color_hex(COL_WHITE), 0);
     char nm[48]; zone_disp_name(s_zone_sel, nm, sizeof nm);
-    lv_label_set_text(ZP.name, nm);
+    ui_name_label(ZP.name, nm, FONT_SET_NAME, &jakarta_600_40_latin);
     /* The displayed zone is the focused one, so it may reveal its full name
      * after LVGL's standard scroll delay while every other zone remains in
      * the rim.  The fixed one-line box prevents it from moving the readout. */

@@ -30,7 +30,7 @@ LW = 5.0
 WING = 14.0
 HEAD_DEG = 35
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png")
 
 def draw_cw(clock_deg):
     """CW arrow whose arc midpoint sits at clock_deg (0 = 12 o'clock, CW

@@ -50,9 +50,12 @@ static const char *TAG = "link_ota";
 #define OTA_HTTP_BUF       4096
 /* download() result for an image built for the other board. */
 #define OTA_ERR_WRONG_BOARD ESP_ERR_NOT_ALLOWED
+#define OTA_ERR_WRONG_VERSION ESP_ERR_INVALID_VERSION
 
 _Static_assert(sizeof(((esp_app_desc_t *)0)->project_name) == OTA_PROJECT_NAME_LEN,
                "ota_same_board compares the whole project_name field");
+_Static_assert(sizeof(((esp_app_desc_t *)0)->version) == OTA_VERSION_LEN,
+               "ota_ver_is_release bounds the whole version field");
 
 static volatile bool s_running;
 static volatile bool s_cancel;
@@ -60,31 +63,40 @@ static volatile bool s_confirm;
 
 #define VALID_SOAK_MS      30000
 #define VALID_POLL_MS      2000
+/* Allow one delayed poll; longer gaps cannot establish observed health. */
+#define VALID_MAX_POLL_GAP_MS (2 * VALID_POLL_MS)
 #define VALID_DEADLINE_MS  (10 * 60 * 1000)
 #define VALID_TASK_STACK   3072
 
 static void ota_guard_task(void *arg)
 {
     (void)arg;
+    ota_guard_t guard = {.healthy_since_ms = -1};
     for (;;) {
         int64_t up_ms = esp_timer_get_time() / 1000;
         bool link  = espnow_client_link_alive();
         bool drawn = ui_has_rendered();
-        ota_guard_act_t act = ota_guard_decide(up_ms, link && drawn,
-                                               VALID_SOAK_MS, VALID_DEADLINE_MS);
+        ota_guard_act_t act = ota_guard_decide(&guard, up_ms, link, drawn,
+                                               VALID_SOAK_MS, VALID_DEADLINE_MS,
+                                               VALID_MAX_POLL_GAP_MS);
         if (act == OTA_GUARD_VALID) {
             esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
-            ESP_LOGI(TAG, "OTA image marked valid at %d s up (%s)",
-                     (int)(up_ms / 1000), esp_err_to_name(e));
-            break;
+            if (e == ESP_OK) {
+                ESP_LOGI(TAG, "OTA image marked valid at %d s up", (int)(up_ms / 1000));
+                break;
+            }
+            ESP_LOGE(TAG, "mark valid failed (%s) — retrying within health deadline",
+                     esp_err_to_name(e));
         }
         if (act == OTA_GUARD_ROLLBACK) {
-            ESP_LOGE(TAG, "health gate never passed in %d s (link=%d ui=%d) — rolling back",
+            ESP_LOGE(TAG, "OTA not accepted in %d s (link=%d ui=%d) — rolling back",
                      (int)(up_ms / 1000), (int)link, (int)drawn);
             esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();
-            ESP_LOGE(TAG, "rollback refused (%s) — keeping this image",
+            /* IDF refuses a missing rollback target before writing metadata.
+               Flash-write failures provide no guarantee of the stored state.
+               Neither error is evidence that this image passed its checks. */
+            ESP_LOGE(TAG, "rollback failed (%s) — image not accepted; recovery required",
                      esp_err_to_name(e));
-            esp_ota_mark_app_valid_cancel_rollback();
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(VALID_POLL_MS));
@@ -107,8 +119,10 @@ void link_ota_init(void)
         return;
 
     if (xTaskCreate(ota_guard_task, "ota_guard", VALID_TASK_STACK, NULL, 3, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "rollback-guard task create failed — marking valid now");
-        esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGE(TAG, "rollback-guard task create failed — attempting rollback");
+        esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();
+        ESP_LOGE(TAG, "rollback failed (%s) — image not accepted; recovery required",
+                 esp_err_to_name(e));
     }
 }
 
@@ -292,7 +306,8 @@ static bool sha_check(const esp_partition_t *part, int len, const char *hex)
     return ok;
 }
 
-static esp_err_t download(const char *fw_url, int plain_size, const char *sha_hex)
+static esp_err_t download(const char *fw_url, int plain_size, const char *sha_hex,
+                          const char *expected_version)
 {
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     esp_http_client_config_t hc = {
@@ -319,12 +334,25 @@ static esp_err_t download(const char *fw_url, int plain_size, const char *sha_he
         esp_https_ota_abort(h);
         return err;
     }
-    const char *mine = esp_app_get_description()->project_name;
+    const esp_app_desc_t *app = esp_app_get_description();
+    const char *mine = app->project_name;
     if (!ota_same_board(mine, img.project_name)) {
         ESP_LOGE(TAG, "wrong board image: \"%.*s\", this dial runs \"%s\"",
                  OTA_PROJECT_NAME_LEN, img.project_name, mine);
         esp_https_ota_abort(h);
         return OTA_ERR_WRONG_BOARD;
+    }
+    /* A valid signature and hash do not bind a manifest's advertised version
+       to this image. Check the descriptor before perform can write to flash. */
+    if (!ota_ver_is_release(img.version) ||
+        strcmp(img.version, expected_version) != 0 ||
+        !memchr(app->version, '\0', sizeof app->version) ||
+        ota_ver_cmp(img.version, app->version) <= 0) {
+        ESP_LOGE(TAG, "wrong image version: \"%.*s\", offered \"%s\", running \"%.*s\"",
+                 (int)sizeof img.version, img.version, expected_version,
+                 (int)sizeof app->version, app->version);
+        esp_https_ota_abort(h);
+        return OTA_ERR_WRONG_VERSION;
     }
     int last_pct = -1;
     while ((err = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
@@ -427,7 +455,8 @@ static void ota_task(void *arg)
                 break;
             }
         }
-        if (!cJSON_IsString(jver) || !path || !sha || size <= 0) { fail = "Bad manifest"; goto done; }
+        if (!cJSON_IsString(jver) || !ota_ver_is_release(jver->valuestring) ||
+            !path || !sha || size <= 0) { fail = "Bad manifest"; goto done; }
 
         const char *local = esp_app_get_description()->version;
         if (ota_ver_cmp(jver->valuestring, local) <= 0) {
@@ -449,9 +478,10 @@ static void ota_task(void *arg)
         snprintf(fw_url, sizeof(fw_url), "%.*s/%s", baselen, murl, path);
 
         ota_ui(OTA_UI_DOWNLOAD, 0, NULL);
-        esp_err_t err = download(fw_url, size, sha);
+        esp_err_t err = download(fw_url, size, sha, jver->valuestring);
         if (err == ESP_ERR_NOT_FINISHED) goto done;
         if (err == OTA_ERR_WRONG_BOARD) { fail = "Wrong board image"; goto done; }
+        if (err == OTA_ERR_WRONG_VERSION) { fail = "Wrong image version"; goto done; }
         if (err != ESP_OK) { fail = "Download failed"; goto done; }
 
         ota_ui(OTA_UI_OK, 100, NULL);

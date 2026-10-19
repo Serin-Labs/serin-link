@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 22 px
  * Bpp: 4
- * Opts: --font /tmp/PlusJakartaSans-SemiBold.ttf --size 22 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x20-0x7F --range 0x00B0 --range 0x00B7 --range 0x2014 --range 0x2026 -o jakarta_600_22.c
+ * Opts: --font tools/PlusJakartaSans-SemiBold.ttf --size 22 --bpp 4 --format lvgl --no-compress --force-fast-kern-format --range 0x20-0x7F --range 0x00B0 --range 0x00B7 --range 0x2014 --range 0x2026 -o main/fonts/jakarta_600_22.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

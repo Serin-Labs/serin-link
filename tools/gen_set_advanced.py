@@ -16,7 +16,7 @@ Flag this as a placeholder if a real design pass ever produces a proper
 set_advanced master — swap the PNG and delete this script's role, same as the
 hero_* masters' own note about their eventual real artwork.
 
-    python3 tools/gen_set_advanced.py   # writes icon_masters/icon_assets/png/set_advanced.png
+    python3 tools/gen_set_advanced.py   # writes tools/assets/icons/png/set_advanced.png
 """
 import os
 
@@ -26,7 +26,7 @@ BAKE = 52
 SS = 16
 NAME = "set_advanced"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "icon_masters", "icon_assets", "png", NAME + ".png")
+OUT = os.path.join(ROOT, "tools", "assets", "icons", "png", NAME + ".png")
 
 ROWS = [(0.30, 0.65), (0.50, 0.35), (0.70, 0.55)]
 

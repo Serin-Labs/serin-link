@@ -19,9 +19,6 @@ void    sensor_sht40_set_base_offset_cc(int16_t cc);
 
 void sensor_sht40_set_idle_off(bool off);
 
-#if CONFIG_SERIN_THERMAL_CAL
-bool sensor_sht40_read_raw(int16_t *temp_cc, uint16_t *hum_cc, uint32_t *age_ms);
-#endif
 
 #else
 
@@ -32,9 +29,5 @@ static inline bool sensor_sht40_read(int16_t *t, uint16_t *h, uint32_t *a)
 static inline int16_t sensor_sht40_offset_cc(void) { return 0; }
 static inline void sensor_sht40_set_base_offset_cc(int16_t cc) { (void)cc; }
 static inline void sensor_sht40_set_idle_off(bool off) { (void)off; }
-#if CONFIG_SERIN_THERMAL_CAL
-static inline bool sensor_sht40_read_raw(int16_t *t, uint16_t *h, uint32_t *a)
-{ (void)t; (void)h; (void)a; return false; }
-#endif
 
 #endif

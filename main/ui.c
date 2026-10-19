@@ -7,6 +7,7 @@
 #include "ui_rim.h"
 #include "ui_arim.h"
 #include "ui_internal.h"
+#include "ui_name.h"
 #include "icons.h"
 #include "serin_tokens.h"
 #include "serin_input.h"
@@ -26,7 +27,6 @@
 #include "branding.h"
 #include "prefs.h"
 #include "sensor_sht40.h"
-#include "thermal_cal.h"
 #include "link_ota.h"
 
 hvac_state_t s_state;
@@ -120,16 +120,9 @@ char     s_ota_txt[48];
 char     s_fw_ver[24];
 char     s_fw_build[16];
 
-#if CONFIG_SERIN_THERMAL_CAL
-static bool s_cal_owned;
-static bool s_cal_writing;
-#endif
 
 void ui_set_link_state(bool bonded, bool online, const uint8_t mac[6], int rssi)
 {
-#if CONFIG_SERIN_THERMAL_CAL
-    if (s_cal_owned && !s_cal_writing) return;
-#endif
     bool same = s_link.bonded == bonded && s_link.online == online &&
                 s_link.rssi == rssi && (!mac || memcmp(s_link.mac, mac, 6) == 0);
     if (same) return;
@@ -292,7 +285,6 @@ static void idle_set_dim(bool dim)
 void note_activity(void)
 {
     lv_display_trigger_activity(NULL);
-    thermal_cal_note_input();
     idle_set_dim(false);
 }
 
@@ -508,9 +500,6 @@ static void lvgl_wdt_cb(lv_timer_t *t)
 static void idle_timer_cb(lv_timer_t *t)
 {
     (void)t;
-#if CONFIG_SERIN_THERMAL_CAL
-    if (s_cal_owned) return;
-#endif
     uint32_t idle = lv_display_get_inactive_time(NULL);
     bool may_dim = s_link.bonded ? (s_pair_state != PAIR_UI_SEARCHING)
                                  : (s_pair_state == PAIR_UI_HIDDEN);
@@ -2360,9 +2349,6 @@ static bool confirm_hold_armed(void)
 void ui_button_long(void)
 {
     note_activity();
-#if CONFIG_SERIN_THERMAL_CAL
-    if (s_cal_owned) { thermal_cal_dump(); return; }
-#endif
     if (dlg_resetting()) return;
     if (s_glancing)    { glance_exit(); return; }
     if (s_disp_asleep) { disp_wake();   return; }
@@ -2493,12 +2479,11 @@ static void pair_btn2_cb(lv_event_t *e)
 
 void ui_set_state(const hvac_state_t *s)
 {
-#if CONFIG_SERIN_THERMAL_CAL
-    if (s_cal_owned && !s_cal_writing) return;
-#endif
     if (s) {
         fan_adopt(s->fan_pct);
         s_state = *s;
+        ui_name_copy(s_state.room_src_name, sizeof s_state.room_src_name,
+                     s_state.room_src_name, sizeof s_state.room_src_name);
         if (!ui_adv_editing_units())
             s_units_c = !s->use_f;
         if (s->alert != ALERT_SYNCING) {
@@ -2655,56 +2640,13 @@ void ui_set_room_src(uint8_t src, uint8_t status)
 
 void ui_set_room_src_name(const char *name)
 {
-    const char *n = name ? name : "";
-    if (strncmp(s_state.room_src_name, n, sizeof s_state.room_src_name) == 0) return;
-    snprintf(s_state.room_src_name, sizeof s_state.room_src_name, "%s", n);
+    char n[sizeof s_state.room_src_name] = {0};
+    ui_name_copy(n, sizeof n, name, sizeof n);
+    if (strcmp(s_state.room_src_name, n) == 0) return;
+    memcpy(s_state.room_src_name, n, sizeof n);
     ui_set_state(&s_state);
 }
 
-#if CONFIG_SERIN_THERMAL_CAL
-
-void ui_cal_take(bool take)
-{
-    s_cal_owned = take;
-    if (take) {
-        s_glancing = false;
-        ui_show_screen(SCREEN_THERMOSTAT);
-    }
-}
-
-void ui_cal_face(ui_cal_face_t f)
-{
-    hvac_state_t st = {
-        .mode             = MODE_HEAT,
-        .status           = ST_IDLE,
-        .room_temp        = 70,
-        .set_dd           = 700,
-        .use_f            = true,
-        .alert            = ALERT_NONE,
-        .cn105_connected  = true,
-        .wifi_provisioned = true,
-        .wifi_setup_avail = false,
-        .humidity_valid   = false,
-        .band_valid       = false,
-    };
-    bool bonded = true;
-
-    switch (f) {
-    case UI_CAL_CN105_OFF: st.cn105_connected = false; break;
-    case UI_CAL_UNPAIRED:  bonded = false;             break;
-    case UI_CAL_LIVE:
-    case UI_CAL_GLANCE:    break;
-    }
-
-    s_cal_writing = true;
-    ui_set_link_state(bonded, bonded, NULL, -50);
-    ui_set_state(&st);
-    s_cal_writing = false;
-
-    s_glancing = (f == UI_CAL_GLANCE);
-    refresh_thermostat();
-}
-#endif
 
 void zchip_refresh(void)
 {
@@ -2719,7 +2661,7 @@ void zchip_refresh(void)
     } else {
         lv_obj_align(T.zchip, LV_ALIGN_BOTTOM_MID, 0, -SERIN_PX(CHIP_BOT_Y));
         char nm[48]; zone_disp_name(s_zactive, nm, sizeof nm);
-        lv_label_set_text(T.zname, nm);
+        ui_name_label(T.zname, nm, FONT_DIAL_PILL, &jakarta_600_27_latin);
         lv_obj_remove_flag(T.zchip, LV_OBJ_FLAG_HIDDEN);
     }
 

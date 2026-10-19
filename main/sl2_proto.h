@@ -327,7 +327,7 @@ static inline bool sl2_tlv_next(const uint8_t *buf, size_t len, size_t *off,
 #define SL2_ROOM_SOURCE_NS_SENSOR    2u
 #define SL2_ROOM_SOURCE_NS_LINK      1u
 #define SL2_ROOM_SOURCE_NS_LINK_AUTO 3u
-#define SL2_ROOM_SOURCE_LINK_AUTO_ID (UINT64_C(SL2_ROOM_SOURCE_NS_LINK_AUTO) << 56)
+#define SL2_ROOM_SOURCE_LINK_AUTO_ID ((uint64_t)SL2_ROOM_SOURCE_NS_LINK_AUTO << 56)
 #define SL2_ROOM_SOURCE_NAME_LEN     24
 #define SL2_ROOM_CATALOG_DONE        UINT16_C(0xFFFF)
 
