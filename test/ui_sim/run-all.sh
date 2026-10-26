@@ -14,9 +14,9 @@ python3 -c 'from PIL import Image' 2>/dev/null || {
 for board in "${boards[@]}"; do
     export SERIN_SIM_BIN
     SERIN_SIM_BIN=$("$root/test/ui_sim/build.sh" "$board")
-    for check in navigation_wifi_modes wifi_cancel room_source name_fonts airflow advanced settings_touch child_lock coach_taps home_taps; do
+    for check in navigation_wifi_modes wifi_cancel room_source name_fonts airflow advanced settings_touch child_lock coach_taps home_taps custom_ranges canonical_band_gap; do
         printf '\nUI %s: %s\n' "$board" "$check"
         "$root/test/ui_sim/$check.sh"
     done
-    printf '\nUI %s: all 10 checks passed\n' "$board"
+    printf '\nUI %s: all 12 checks passed\n' "$board"
 done

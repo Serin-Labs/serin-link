@@ -65,22 +65,83 @@ ui_caps_t s_caps = {
     .ftab_id      = 1,
     .band_min_gap_dc = 5,
 };
-static inline int   caps_step_dd(const ui_caps_t *c, bool units_c) {
-    return units_c ? (c->set_step_dc ? c->set_step_dc : 10) : 10;
+/* Canonical coordinates retained across CAPS-only remapping. Native F can
+ * lose a half-degree in its label, so the next CAPS must not invert that label.
+ * Canonical controller state or a genuine movement replaces these coordinates. */
+static struct { bool valid, units_c; int set, lo, hi; } s_caps_intent;
+/* Canonical advertised bounds, represented in the active display unit.
+ * Linear F preserves the C grid; native F retains its table detents. */
+static inline int caps_step_dd(const ui_caps_t *c, bool units_c) {
+    int step = c->set_step_dc ? c->set_step_dc : 10;
+    return units_c ? step : (c->ftab_id == 1 ? 10 : (int)lroundf(step * 9.0f / 5.0f));
 }
-static inline int   caps_ddmin(const ui_caps_t *c, bool units_c) {
-    if (!units_c) return sl2_dc_to_display(c->set_min_dc, true, c->ftab_id) * 10;
-    int st = caps_step_dd(c, true);
-    return ((c->set_min_dc + st - 1) / st) * st;
+static inline int caps_ddmin(const ui_caps_t *c, bool units_c) {
+    return ui_dd_from_dc(c->set_min_dc, !units_c, c->ftab_id);
 }
-static inline int   caps_ddmax(const ui_caps_t *c, bool units_c) {
-    if (!units_c) return sl2_dc_to_display(c->set_max_dc, true, c->ftab_id) * 10;
-    int st = caps_step_dd(c, true);
-    return (c->set_max_dc / st) * st;
+static inline int caps_ddmax(const ui_caps_t *c, bool units_c) {
+    return ui_dd_from_dc(c->set_max_dc, !units_c, c->ftab_id);
+}
+static int setpoint_dc(int dd) {
+    return ui_setpoint_dd_to_dc(dd, !s_units_c, s_caps.ftab_id,
+                               s_caps.set_min_dc, s_caps.set_max_dc, s_caps.set_step_dc);
+}
+static int canonical_dd(int dd) {
+    return ui_dd_from_dc(setpoint_dc(dd), !s_units_c, s_caps.ftab_id);
+}
+static int caps_intent_dc(int dc) {
+    return ui_setpoint_dd_to_dc(dc, false, 0, s_caps.set_min_dc,
+                               s_caps.set_max_dc, s_caps.set_step_dc);
+}
+static int caps_intent_dd(int dc) {
+    return ui_dd_from_dc(caps_intent_dc(dc), !s_units_c, s_caps.ftab_id);
+}
+static void capture_caps_intent(void) {
+    if (s_caps_intent.valid && s_caps_intent.units_c == s_units_c) return;
+    s_caps_intent.set = setpoint_dc(s_state.set_dd);
+    s_caps_intent.lo = setpoint_dc(s_state.set_lo_dd);
+    s_caps_intent.hi = setpoint_dc(s_state.set_hi_dd);
+    s_caps_intent.units_c = s_units_c;
+    s_caps_intent.valid = true;
+}
+/* A detent selects the next representable canonical point in its direction.
+ * Nearest rounding alone can return the same native F label forever on a
+ * whole-C grid (73F -> 72F -> 22.5C -> 23C -> 73F). Skip native table holes;
+ * a point is reachable only when the command conversion returns that point. */
+static int step_setpoint_dd(int dd, int steps)
+{
+    int direction = steps > 0 ? 1 : -1;
+    int step = s_caps.set_step_dc ? s_caps.set_step_dc : 10;
+    while (steps) {
+        int dc = setpoint_dc(dd);
+        int offset = dc - s_caps.set_min_dc;
+        int grid = offset / step;
+        if (direction > 0) ++grid;
+        else if (offset % step == 0) --grid;
+        int next = s_caps.set_min_dc + grid * step;
+        for (;;) {
+            if (next < s_caps.set_min_dc) next = s_caps.set_min_dc;
+            if (next > s_caps.set_max_dc) next = s_caps.set_max_dc;
+            int candidate = ui_dd_from_dc(next, !s_units_c, s_caps.ftab_id);
+            if (candidate != dd && setpoint_dc(candidate) == next) {
+                dd = candidate;
+                break;
+            }
+            if (next == s_caps.set_min_dc || next == s_caps.set_max_dc) break;
+            next += direction * step;
+        }
+        steps -= direction;
+    }
+    return dd;
 }
 static inline int   dial_step_dd(void) { return caps_step_dd(&s_caps, s_units_c); }
 static inline int   dial_ddmin(void)   { return caps_ddmin(&s_caps, s_units_c); }
 static inline int   dial_ddmax(void)   { return caps_ddmax(&s_caps, s_units_c); }
+/* Native table gaps can make a valid C interval one F position. Keep its
+ * advertised bounds, render a finite arc, and let Celsius select its targets. */
+static bool dial_range_collapsed(void) { return dial_ddmax() <= dial_ddmin(); }
+static float dial_temp_t(float dd) {
+    return dial_range_collapsed() ? 0.0f : serin_temp_t(dd, dial_ddmin(), dial_ddmax());
+}
 static bool         s_edit = false;
 static lv_timer_t  *s_edit_timer;
 static bool         s_drag_engaged;
@@ -733,8 +794,8 @@ static int s_dispSet10 = 720;
 #define HERO_HALF_X   -8
 static void hero_set_dd(int dd)
 {
-    lv_label_set_text_fmt(T.num, "%d", dd / 10);
-    int frac = dd % 10; if (frac < 0) frac = -frac;
+    lv_label_set_text_fmt(T.num, "%d", s_units_c ? dd / 10 : (int)lroundf(dd / 10.0f));
+    int frac = s_units_c ? dd % 10 : 0; if (frac < 0) frac = -frac;
     if (frac) {
         lv_label_set_text_fmt(T.numHalf, ".%d", frac);
         lv_obj_remove_flag(T.numHalf, LV_OBJ_FLAG_HIDDEN);
@@ -756,10 +817,10 @@ static bool band_active(void)
 #define BAND_HALF_Y   10
 static void band_hero_one(lv_obj_t *num, lv_obj_t *half, int dd, bool right)
 {
-    lv_label_set_text_fmt(num, "%d", dd / 10);
+    lv_label_set_text_fmt(num, "%d", s_units_c ? dd / 10 : (int)lroundf(dd / 10.0f));
     lv_obj_align(num, LV_ALIGN_CENTER,
                  right ? SERIN_PX(BAND_NUM_OFS) : -SERIN_PX(BAND_NUM_OFS), 0);
-    int frac = dd % 10; if (frac < 0) frac = -frac;
+    int frac = s_units_c ? dd % 10 : 0; if (frac < 0) frac = -frac;
     if (frac) {
         lv_label_set_text_fmt(half, ".%d", frac);
         lv_obj_align_to(half, num, LV_ALIGN_OUT_RIGHT_BOTTOM, SERIN_PX(BAND_HALF_X), -SERIN_PX(BAND_HALF_Y));
@@ -816,48 +877,40 @@ static void edit_rails(int *lo, int *hi)
 {
     *lo = dial_ddmin(); *hi = dial_ddmax();
     if (!band_active() || !s_caps.band_min_gap_dc) return;
+    capture_caps_intent();
     bool use_f = !s_units_c;
     int  gap   = s_caps.band_min_gap_dc;
-    if (band_sel()) {
-        int16_t min_dc = (int16_t)(ui_dd_to_dc(s_state.set_lo_dd, use_f, s_caps.ftab_id) + gap);
-        int dd = ui_dd_from_dc(min_dc, use_f, s_caps.ftab_id);
+    /* the grid walks are bounded by the dial range: ftab1 °F saturates at the
+     * table edges, where an unbounded walk over the plateau would never
+     * terminate (edge at 88 °F + gap -> min_dc past the table max). */
+    if (band_sel()) {              /* editing hi: floor = lo + gap */
+        int16_t min_dc = (int16_t)(caps_intent_dc(s_caps_intent.lo) + gap);
+        int dd = canonical_dd(ui_dd_from_dc(min_dc, use_f, s_caps.ftab_id));
         while (dd <= dial_ddmax() &&
-               ui_dd_to_dc(dd, use_f, s_caps.ftab_id) < min_dc) dd += dial_step_dd();
+               setpoint_dc(dd) < min_dc) dd += dial_step_dd();
         if (dd > *lo) *lo = dd;
-    } else {
-        int16_t max_dc = (int16_t)(ui_dd_to_dc(s_state.set_hi_dd, use_f, s_caps.ftab_id) - gap);
-        int dd = ui_dd_from_dc(max_dc, use_f, s_caps.ftab_id);
+    } else {                       /* editing lo: ceiling = hi - gap */
+        int16_t max_dc = (int16_t)(caps_intent_dc(s_caps_intent.hi) - gap);
+        int dd = canonical_dd(ui_dd_from_dc(max_dc, use_f, s_caps.ftab_id));
         while (dd >= dial_ddmin() &&
-               ui_dd_to_dc(dd, use_f, s_caps.ftab_id) > max_dc) dd -= dial_step_dd();
+               setpoint_dc(dd) > max_dc) dd -= dial_step_dd();
         if (dd < *hi) *hi = dd;
     }
 }
 
 static void thermo_ring(float setdd);
 
-/* The setpoints are display values. Carry them into the new unit before the
- * controller echoes it, or the next step starts from an old-unit number and
- * clamps to a rail. A flip straight back restores the exact old values.
- * Band edges are not re-separated: edges closer than one step of the new
- * unit can land on the same value (lo == hi). Not fixed here. */
+/* Units change presentation, never canonical targets or the untouched edge. */
 void units_set(bool units_c)
 {
-    static ui_dd_flip_t memo[3];
-    static int memo_zone;
     if (units_c == s_units_c) return;
-    /* Another zone's flip must not restore into this zone. */
-    if (memo_zone != s_zactive) { memset(memo, 0, sizeof memo); memo_zone = s_zactive; }
-    bool was_f = !s_units_c;
+    capture_caps_intent();
     s_units_c = units_c;
+    s_caps_intent.units_c = units_c;
     s_state.use_f = !units_c;
-    int *dd[] = { &s_state.set_dd, &s_state.set_lo_dd, &s_state.set_hi_dd };
-    for (size_t i = 0; i < sizeof dd / sizeof *dd; i++) {
-        if (*dd[i] <= 0) continue;
-        int v = ui_dd_flip(&memo[i], *dd[i], was_f, !units_c, s_caps.ftab_id);
-        if (v < dial_ddmin()) v = dial_ddmin();
-        if (v > dial_ddmax()) v = dial_ddmax();
-        *dd[i] = memo[i].after = v;
-    }
+    s_state.set_dd = caps_intent_dd(s_caps_intent.set);
+    s_state.set_lo_dd = caps_intent_dd(s_caps_intent.lo);
+    s_state.set_hi_dd = caps_intent_dd(s_caps_intent.hi);
     notify_units(!units_c);
 }
 
@@ -892,15 +945,15 @@ static void thermo_ring(float setdd)
     if (band_active()) {
         float lodd = band_sel() ? (float)s->set_lo_dd : setdd;
         float hidd = band_sel() ? setdd : (float)s->set_hi_dd;
-        float tl = serin_temp_t(lodd, dial_ddmin(), dial_ddmax());
-        float th = serin_temp_t(hidd, dial_ddmin(), dial_ddmax());
+        float tl = dial_temp_t(lodd);
+        float th = dial_temp_t(hidd);
         arc_set_span(tl, th);
         place_dot(T.setDot,  2 * SERIN_PX(SERIN_DOT_SET_R), tl);
         place_dot(T.setDot2, 2 * SERIN_PX(SERIN_DOT_SET_R), th);
         return;
     }
-    float rp = serin_temp_t((float)(s->room_temp * 10), dial_ddmin(), dial_ddmax());
-    float sp = serin_temp_t(setdd, dial_ddmin(), dial_ddmax());
+    float rp = dial_temp_t((float)(s->room_temp * 10));
+    float sp = dial_temp_t(setdd);
     arc_set_span(rp < sp ? rp : sp, rp > sp ? rp : sp);
     place_dot(T.setDot, 2 * SERIN_PX(SERIN_DOT_SET_R), sp);
 }
@@ -908,7 +961,7 @@ static void thermo_layout(int setdd)
 {
     thermo_ring((float)setdd);
     place_dot(T.roomDot, 2 * SERIN_PX(SERIN_DOT_ROOM_R),
-              serin_temp_t((float)(s_state.room_temp * 10), dial_ddmin(), dial_ddmax()));
+              dial_temp_t((float)(s_state.room_temp * 10)));
     if (band_active()) band_heroes();
     else               hero_set_dd(setdd);
 }
@@ -988,15 +1041,23 @@ static void sync_tell_timer_cb(lv_timer_t *t)
     if (s_cur == SCREEN_THERMOSTAT) refresh_thermostat();
 }
 
-static void set_setpoint(int dd, bool animate)
+static void set_setpoint(int steps, bool animate)
 {
+    int dd = step_setpoint_dd(*edit_slot(), steps);
     int rlo, rhi; edit_rails(&rlo, &rhi);
     if (rlo > rhi) dd = *edit_slot();
     else {
         if (dd < rlo) dd = rlo;
         if (dd > rhi) dd = rhi;
     }
-    *edit_slot() = dd;
+    int *slot = edit_slot();
+    capture_caps_intent();
+    if (dd != *slot) {
+        if (slot == &s_state.set_dd) s_caps_intent.set = setpoint_dc(dd);
+        else if (slot == &s_state.set_lo_dd) s_caps_intent.lo = setpoint_dc(dd);
+        else s_caps_intent.hi = setpoint_dc(dd);
+    }
+    *slot = dd;
     s_edit = true;
     if (s_edit_timer) lv_timer_reset(s_edit_timer);
     else s_edit_timer = lv_timer_create(edit_timer_cb, 1200, NULL);
@@ -1025,8 +1086,8 @@ static void set_setpoint(int dd, bool animate)
 }
 
 static inline float dial_deg_per_step(void) {
-    return SERIN_ARC_SWEEP * (float)dial_step_dd()
-         / (float)(dial_ddmax() - dial_ddmin());
+    return dial_range_collapsed() ? SERIN_ARC_SWEEP
+         : SERIN_ARC_SWEEP * (float)dial_step_dd() / (float)(dial_ddmax() - dial_ddmin());
 }
 
 static float dial_point_angle(int px, int py)
@@ -1069,7 +1130,7 @@ static bool dial_drag_arm(lv_point_t p)
     s_drag_engaged  = false;
     s_drag_anchored = false;
     s_drag_accum    = 0.0f;
-    if (thermo_face() != DIAL_LIVE) return false;
+    if (thermo_face() != DIAL_LIVE || dial_range_collapsed()) return false;
     if (s_state.alert == ALERT_SYNCING) return false;
     if (dial_point_radius(p.x, p.y) >= SERIN_DRAG_R_MIN) {
         s_drag_ang0 = s_drag_ang = dial_point_angle(p.x, p.y);
@@ -1080,6 +1141,7 @@ static bool dial_drag_arm(lv_point_t p)
 
 static bool dial_drag_frame(lv_point_t p, bool may_engage)
 {
+    if (dial_range_collapsed()) return false;
     if (dial_point_radius(p.x, p.y) < SERIN_DRAG_R_MIN) return s_drag_engaged;
     float ang = dial_point_angle(p.x, p.y);
     if (!s_drag_anchored) {
@@ -1105,11 +1167,11 @@ static bool dial_drag_frame(lv_point_t p, bool may_engage)
     s_drag_accum += d / dial_deg_per_step();
     bool changed = false;
     while (s_drag_accum >=  1.0f) {
-        if (!coach_demo_turn(1))  { set_setpoint(*edit_slot() + dial_step_dd(), false); changed = true; }
+        if (!coach_demo_turn(1))  { set_setpoint(1, false); changed = true; }
         s_drag_accum -= 1.0f;
     }
     while (s_drag_accum <= -1.0f) {
-        if (!coach_demo_turn(-1)) { set_setpoint(*edit_slot() - dial_step_dd(), false); changed = true; }
+        if (!coach_demo_turn(-1)) { set_setpoint(-1, false); changed = true; }
         s_drag_accum += 1.0f;
     }
     if (!coach_sandbox_active()) {
@@ -1127,6 +1189,7 @@ static bool dial_drag_frame(lv_point_t p, bool may_engage)
 
 static void dial_drag_end(void)
 {
+    if (dial_range_collapsed()) return;
     if (coach_sandbox_active()) return;
     notify_edit();
 }
@@ -1520,7 +1583,7 @@ static void refresh_glance(const hvac_state_t *s)
 
     lv_obj_set_style_bg_color(T.setDot, lv_color_hex(mode_accent(s->mode)), 0);
     place_dot(T.setDot, 2 * SERIN_PX(SERIN_DOT_SET_R),
-              serin_temp_t((float)active_edit_dd(), dial_ddmin(), dial_ddmax()));
+              dial_temp_t((float)active_edit_dd()));
     lv_obj_remove_flag(T.setDot, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -2115,12 +2178,13 @@ bool sync_refuse(void)
 
 static void thermo_turn(int delta)
 {
+    if (dial_range_collapsed()) return;
     if (coach_demo_turn(delta)) return;
     if (thermo_face() != DIAL_LIVE) return;
     if (lock_refuse()) return;
     if (s_state.alert == ALERT_SYNCING)
         return;
-    set_setpoint(*edit_slot() + delta * dial_step_dd(), true);
+    set_setpoint(delta, true);
     notify_edit();
 }
 
@@ -2481,6 +2545,12 @@ void ui_set_state(const hvac_state_t *s)
 {
     if (s) {
         fan_adopt(s->fan_pct);
+        /* INFO/sensor refreshes keep conversion intent; new canonical STATE
+         * installs its coordinates explicitly even when native labels tie. */
+        if (s->set_dd != s_state.set_dd || s->set_lo_dd != s_state.set_lo_dd ||
+            s->set_hi_dd != s_state.set_hi_dd || s->use_f != s_state.use_f ||
+            s->band_valid != s_state.band_valid)
+            s_caps_intent.valid = false;
         s_state = *s;
         ui_name_copy(s_state.room_src_name, sizeof s_state.room_src_name,
                      s_state.room_src_name, sizeof s_state.room_src_name);
@@ -2497,6 +2567,21 @@ void ui_set_state(const hvac_state_t *s)
     }
     dlg_check_close();
     refresh_cur_screen();
+}
+void ui_set_state_canonical(const hvac_state_t *state, int set_dc, int low_dc, int high_dc)
+{
+    ui_set_state(state);
+    capture_caps_intent();
+    if (set_dc != SL2_DC_NA) s_caps_intent.set = set_dc;
+    if (low_dc != SL2_DC_NA) s_caps_intent.lo = low_dc;
+    if (high_dc != SL2_DC_NA) s_caps_intent.hi = high_dc;
+}
+void ui_get_setpoints_dc(int *set_dc, int *low_dc, int *high_dc)
+{
+    capture_caps_intent();
+    *set_dc = caps_intent_dc(s_caps_intent.set);
+    *low_dc = caps_intent_dc(s_caps_intent.lo);
+    *high_dc = caps_intent_dc(s_caps_intent.hi);
 }
 void ui_get_state(hvac_state_t *out) { if (out) *out = s_state; }
 int  ui_band_edge(void) { return band_sel(); }
@@ -2602,8 +2687,8 @@ static void ui_state_defaults(hvac_state_t *s)
 
 static bool caps_range_usable(const ui_caps_t *c)
 {
-    return caps_ddmax(c, true)  - caps_ddmin(c, true)  >= caps_step_dd(c, true) &&
-           caps_ddmax(c, false) - caps_ddmin(c, false) >= caps_step_dd(c, false);
+    int step = c->set_step_dc ? c->set_step_dc : 10;
+    return c->set_max_dc - c->set_min_dc >= step;
 }
 
 void ui_set_caps(const ui_caps_t *caps)
@@ -2611,9 +2696,14 @@ void ui_set_caps(const ui_caps_t *caps)
     ui_caps_t c = *caps;
     if (c.modes == 0) c.modes = 0x007F;
     if (!caps_range_usable(&c)) { c.set_min_dc = 160; c.set_max_dc = 305; }
+    capture_caps_intent();
     s_caps = c;
-    if (s_state.set_dd < dial_ddmin()) s_state.set_dd = dial_ddmin();
-    if (s_state.set_dd > dial_ddmax()) s_state.set_dd = dial_ddmax();
+    s_state.set_dd = caps_intent_dd(s_caps_intent.set);
+    if (s_state.band_valid) {
+        s_state.set_lo_dd = caps_intent_dd(s_caps_intent.lo);
+        s_state.set_hi_dd = caps_intent_dd(s_caps_intent.hi);
+    }
+    if (s_cur == SCREEN_THERMOSTAT) refresh_cur_screen();
 
     for (int i = 0; i < SCREEN_COUNT; i++)
         if (SCREEN_OPS[i].caps_changed) SCREEN_OPS[i].caps_changed();
@@ -2737,7 +2827,9 @@ void ui_set_zones(const ui_zone_info_t *z, int n, int active)
     }
     if (n) memcpy(s_zinfo, z, (size_t)n * sizeof *z);
     s_zn_ui   = n;
-    s_zactive = (active >= 0 && active < n) ? active : 0;
+    int selected = (active >= 0 && active < n) ? active : 0;
+    if (selected != s_zactive) s_caps_intent.valid = false;
+    s_zactive = selected;
     zones_changed(n);
 
     menu_recheck();
@@ -2806,7 +2898,7 @@ bool home_airbtn_rect(lv_area_t *out)
 
 int32_t home_arc_fill_deg(void)
 {
-    float t = serin_temp_t((float)s_state.set_dd, dial_ddmin(), dial_ddmax());
+    float t = dial_temp_t((float)s_state.set_dd);
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     return (int32_t)(t * ARIM_SPAN_DEG + 0.5f);

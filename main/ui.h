@@ -116,7 +116,13 @@ static inline bool hvac_state_plausible(const hvac_state_t *s) {
 
 void        ui_init(void);
 void        ui_set_state(const hvac_state_t *s);
+/* Publish known canonical coordinates; SL2_DC_NA leaves a coordinate unchanged.
+ * Caller holds the existing UI lock, as for ui_set_state. */
+void        ui_set_state_canonical(const hvac_state_t *s, int set_dc, int low_dc, int high_dc);
 void        ui_get_state(hvac_state_t *out);
+/* Read the normalized canonical coordinates used by the edit rails.
+ * All outputs are required. Caller holds the existing UI lock. */
+void        ui_get_setpoints_dc(int *set_dc, int *low_dc, int *high_dc);
 int         ui_band_edge(void);
 int         ui_active_zone(void);
 int         ui_zone_count(void);

@@ -34,6 +34,15 @@ static struct { bool synced; ui_caps_t caps; hvac_state_t st; } s_z[2];
 static void sweep_backoff_reset(void) {}
 static uint32_t now_ms(void) { return clock_ms; }
 void ui_get_state(hvac_state_t *out) { *out = display; }
+void ui_get_setpoints_dc(int *set, int *lo, int *hi) {
+    const ui_caps_t *c = &s_z[s_active].caps;
+    *set = ui_setpoint_dd_to_dc(display.set_dd, display.use_f, c->ftab_id,
+        c->set_min_dc, c->set_max_dc, c->set_step_dc);
+    *lo = ui_setpoint_dd_to_dc(display.set_lo_dd, display.use_f, c->ftab_id,
+        c->set_min_dc, c->set_max_dc, c->set_step_dc);
+    *hi = ui_setpoint_dd_to_dc(display.set_hi_dd, display.use_f, c->ftab_id,
+        c->set_min_dc, c->set_max_dc, c->set_step_dc);
+}
 static const char *TAG = "test";
 #define ESP_LOGW(tag, ...) ((void)(tag))
 static bool lvgl_port_lock(int t) { (void)t; return true; }
@@ -49,6 +58,7 @@ static void cmd_post(int zi, const struct sl2_cmd_pkt *p) {
 }
 '''
 production = "\n".join(function(signature) for signature in (
+    "static bool held_f_ambiguous(",
     "static void cmd_put_temp(",
     "static void cmd_put_band(",
     "static bool edits_pending(",
