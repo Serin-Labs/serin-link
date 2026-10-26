@@ -58,11 +58,8 @@ static void expect_packet(enum field field, bool flush) {
 /* Celsius display value 21.0 as the default Fahrenheit table shows it (690). */
 static int to_f(int dd) { return ui_dd_from_dc(ui_dd_to_dc(dd, false, 1), true, 1); }
 
-/* The user flips Celsius to Fahrenheit while the controller has not echoed
- * yet. The UI converts its own setpoints; the client must move its holds and
- * the controller's values into the same unit, because every later STATE is
- * converted with the new unit. units_back steps away and back after the flip,
- * which must cancel instead of sending a correction. */
+/* The UI changes presentation while client holds remain canonical. A return
+ * to the controller target before TX must still cancel the unsent edit. */
 static int units_flip(enum field field, bool back, const char *name) {
     struct sl2_cmd_pkt p;
     uint32_t debounce = field == FAN ? FAN_DEBOUNCE_MS : EDIT_DEBOUNCE_MS;
@@ -97,13 +94,15 @@ static int units_flip(enum field field, bool back, const char *name) {
      * with the new-unit value the user chose. */
     switch (field) {
     case TEMPERATURE:
-        display.set_dd = edit_hold_echo(&s_set_hold, to_f(200), clock_ms, SET_HOLD_MS);
+        display.set_dd = to_f(edit_hold_echo(&s_set_hold, 200, clock_ms, SET_HOLD_MS));
         assert(display.set_dd == to_f(210));
         break;
     case BAND:
-        display.set_lo_dd = to_f(190); display.set_hi_dd = to_f(250);
+        display.set_lo_dd = 190; display.set_hi_dd = 250;
         edit_hold2_echo(&s_band_hold, &display.set_lo_dd, &display.set_hi_dd,
                         clock_ms, SET_HOLD_MS);
+        display.set_lo_dd = to_f(display.set_lo_dd);
+        display.set_hi_dd = to_f(display.set_hi_dd);
         assert(display.set_lo_dd == to_f(200) && display.set_hi_dd == to_f(260));
         break;
     case FAN:
@@ -115,8 +114,8 @@ static int units_flip(enum field field, bool back, const char *name) {
     expect_packet(field, false);
 
     /* The controller confirms in Fahrenheit, which ends the hold. */
-    int lo = to_f(200), hi = to_f(260);
-    edit_hold_echo(&s_set_hold, to_f(210), clock_ms, SET_HOLD_MS);
+    int lo = 200, hi = 260;
+    edit_hold_echo(&s_set_hold, 210, clock_ms, SET_HOLD_MS);
     edit_hold2_echo(&s_band_hold, &lo, &hi, clock_ms, SET_HOLD_MS);
     edit_hold_echo(&s_fan_hold, 60, clock_ms, SET_HOLD_MS);
     assert(!edits_pending());
@@ -137,7 +136,7 @@ static int units_round_trip(enum field field, const char *name) {
     const edit_hold2_t band = s_band_hold;
     const edit_hold_t fan = s_fan_hold;
     const int sent = s_tx_sent_temp, sent_lo = s_tx_sent_lo, sent_hi = s_tx_sent_hi;
-    const int ctrl = s_ctrl_set_dd, ctrl_lo = s_ctrl_lo_dd, ctrl_hi = s_ctrl_hi_dd;
+    const int ctrl = s_ctrl_set_dc, ctrl_lo = s_ctrl_lo_dc, ctrl_hi = s_ctrl_hi_dc;
     espnow_client_on_units_edit(true);
     espnow_client_on_units_edit(false);
     assert(unit_posts == 2 && !s_use_f);
@@ -146,26 +145,24 @@ static int units_round_trip(enum field field, const char *name) {
            s_band_hold.hi == band.hi && !s_band_hold_use_f);
     assert(s_fan_hold.on == fan.on && s_fan_hold.val == fan.val);
     assert(s_tx_sent_temp == sent && s_tx_sent_lo == sent_lo && s_tx_sent_hi == sent_hi);
-    assert(s_ctrl_set_dd == ctrl && s_ctrl_lo_dd == ctrl_lo && s_ctrl_hi_dd == ctrl_hi);
+    assert(s_ctrl_set_dc == ctrl && s_ctrl_lo_dc == ctrl_lo && s_ctrl_hi_dc == ctrl_hi);
     clock_ms += field == FAN ? FAN_DEBOUNCE_MS : EDIT_DEBOUNCE_MS;
     expect_packet(field, false);
     printf("PASS client edits: %s/units_round_trip\n", name);
     return 0;
 }
 
-/* A flip in zone 0, a zone switch, then a flip back in zone 1 whose value
- * happens to equal zone 0's converted value. Zone 0's memory must not leak:
- * 70 F converts to 21.1 C with the generic table, not zone 0's 21.0 C. */
+/* Units in one zone cannot alter another zone's canonical controller target. */
 static int units_zone_switch(const char *name) {
     s_z[0].caps.ftab_id = s_z[1].caps.ftab_id = 0;
     s_z[1].synced = true;
-    s_ctrl_set_dd = 210;
+    s_ctrl_set_dc = 210;
     espnow_client_on_units_edit(true);
-    assert(s_ctrl_set_dd == 700);
+    assert(s_ctrl_set_dc == 210);
     s_active = 1;                        /* what do_zone_switch leaves behind */
-    s_ctrl_set_dd = 700;
+    s_ctrl_set_dc = 230;
     espnow_client_on_units_edit(false);
-    assert(s_ctrl_set_dd == ui_dd_convert(700, true, false, 0) && s_ctrl_set_dd == 211);
+    assert(s_ctrl_set_dc == 230);
     printf("PASS client edits: %s/units_zone_switch\n", name);
     return 0;
 }
@@ -179,6 +176,7 @@ int main(int argc, char **argv) {
                      !strcmp(argv[2], "state_then_back") ||
                      !strcmp(argv[2], "replay_then_back") ||
                      !strcmp(argv[2], "back_after_tx");
+    s_z[0].caps = s_z[1].caps = (ui_caps_t){ .set_min_dc=160, .set_max_dc=305, .set_step_dc=5 };
     s_z[0].synced = true;
     display.mode = field == BAND ? MODE_HEAT_COOL : MODE_HEAT;
     display.band_valid = field == BAND;

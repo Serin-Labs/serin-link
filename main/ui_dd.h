@@ -8,12 +8,29 @@
 
 static inline int ui_dd_from_dc(int16_t dc, bool use_f, uint8_t ftab)
 {
-    return use_f ? sl2_dc_to_display(dc, true, ftab) * 10 : dc;
+    if (!use_f) return dc;
+    if (ftab == 1) return sl2_dc_to_display(dc, true, ftab) * 10;
+    return (int)lroundf((float)dc * 9.0f / 5.0f + 320.0f);
 }
 
 static inline int16_t ui_dd_to_dc(int dd, bool use_f, uint8_t ftab)
 {
-    return use_f ? sl2_display_to_dc(dd / 10, true, ftab) : (int16_t)dd;
+    if (!use_f) return (int16_t)dd;
+    if (ftab == 1) return sl2_display_to_dc(dd / 10, true, ftab);
+    return (int16_t)lroundf((float)(dd - 320) * 5.0f / 9.0f);
+}
+
+static inline int16_t ui_setpoint_dd_to_dc(int dd, bool use_f, uint8_t ftab,
+                                         int16_t min_dc, int16_t max_dc, uint8_t step_dc)
+{
+    if (dd <= ui_dd_from_dc(min_dc, use_f, ftab)) return min_dc;
+    if (dd >= ui_dd_from_dc(max_dc, use_f, ftab)) return max_dc;
+    int step = step_dc ? step_dc : 10;
+    int dc = ui_dd_to_dc(dd, use_f, ftab);
+    dc = min_dc + (int)lroundf((float)(dc - min_dc) / step) * step;
+    if (dc < min_dc) dc = min_dc;
+    if (dc > max_dc) dc = max_dc;
+    return (int16_t)dc;
 }
 
 /* A display value carried into the other unit. Values <= 0 are unknown or a

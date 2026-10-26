@@ -62,6 +62,9 @@ static inline uint32_t ms_stamp(uint32_t now) { return now ? now : 1; }
 typedef struct {
     espnow_bond_rec_t bond;
     hvac_state_t st;
+    /* Conversion coordinates for that same cached UI snapshot, under UI lock. */
+    int16_t set_dc, low_dc, high_dc;
+    bool canonical_valid;
     bool     synced;
     volatile uint16_t epoch;
     uint16_t epochSync;
@@ -281,10 +284,10 @@ static hvac_state_t s_last_sent;
 /* What the controller itself reports for the held fields. STATE handling
  * masks incoming values through the holds, so s_last_sent and the zone copy
  * carry an in-flight overshoot; these do not. */
-static int s_ctrl_set_dd, s_ctrl_lo_dd, s_ctrl_hi_dd, s_ctrl_fan;
+static int s_ctrl_set_dc, s_ctrl_lo_dc, s_ctrl_hi_dc, s_ctrl_fan;
+/* Cached-zone restore reads the same canonical coordinates as the edit rails. */
 static void ctrl_from(const hvac_state_t *st) {
-    s_ctrl_set_dd = st->set_dd;
-    s_ctrl_lo_dd = st->set_lo_dd; s_ctrl_hi_dd = st->set_hi_dd;
+    ui_get_setpoints_dc(&s_ctrl_set_dc, &s_ctrl_lo_dc, &s_ctrl_hi_dc);
     s_ctrl_fan = st->fan_pct;
 }
 
@@ -524,6 +527,51 @@ static void night_sync(void) {
     lvgl_port_unlock();
 }
 
+/* Present one retained coordinate using current advertised rails/precision. */
+static int canonical_setpoint_dd(int dc, bool use_f, const ui_caps_t *caps) {
+    return ui_dd_from_dc(ui_setpoint_dd_to_dc(dc, false, 0,
+        caps->set_min_dc, caps->set_max_dc, caps->set_step_dc), use_f, caps->ftab_id);
+}
+
+/* Cache canonical coordinates beside the same zone's displayed snapshot.
+ * Active STATE uses masked holds; inactive zones use their own wire truth. */
+static void cache_temperature_state(int zi, const struct sl2_state_pkt *p) {
+    zone_t *z = &s_z[zi];
+    bool is_active = zi == s_active;
+    if (!z->canonical_valid)
+        z->set_dc = z->low_dc = z->high_dc = SL2_DC_NA;
+    if (p->set_dc != SL2_DC_NA)
+        z->set_dc = is_active && s_set_hold.on ? s_set_hold.val : p->set_dc;
+    if (p->set_low_dc != SL2_DC_NA && p->set_high_dc != SL2_DC_NA) {
+        z->low_dc = is_active && s_band_hold.on ? s_band_hold.lo : p->set_low_dc;
+        z->high_dc = is_active && s_band_hold.on ? s_band_hold.hi : p->set_high_dc;
+    }
+    z->canonical_valid = true;
+}
+
+/* Restore that snapshot through current CAPS without inverting native labels.
+ * Called under the existing UI lock before controller comparisons resume. */
+static void restore_zone_ui(int zi, const hvac_state_t *st) {
+    zone_t *z = &s_z[zi];
+    hvac_state_t state = *st;
+    ui_set_caps(&z->caps);
+    if (z->canonical_valid) {
+        const ui_caps_t *c = &z->caps;
+        if (z->set_dc != SL2_DC_NA)
+            state.set_dd = canonical_setpoint_dd(z->set_dc, state.use_f, c);
+        if (state.band_valid) {
+            state.set_lo_dd = canonical_setpoint_dd(z->low_dc, state.use_f, c);
+            state.set_hi_dd = canonical_setpoint_dd(z->high_dc, state.use_f, c);
+        }
+    }
+    ui_set_state_canonical(&state, z->canonical_valid ? z->set_dc : SL2_DC_NA,
+        z->canonical_valid ? z->low_dc : SL2_DC_NA,
+        z->canonical_valid ? z->high_dc : SL2_DC_NA);
+    s_last_sent = state;
+    ctrl_from(&state);
+    s_use_f = state.use_f;
+}
+
 static void apply_state(int zi, const struct sl2_state_pkt *p, uint32_t received_ms) {
     zone_t *z = &s_z[zi];
     if (zi == s_active) sweep_backoff_reset();
@@ -555,23 +603,25 @@ static void apply_state(int zi, const struct sl2_state_pkt *p, uint32_t received
                  : (action_active(p->action) ? ST_ACTIVE : ST_IDLE);
     s.room_temp  = sl2_dc_to_display(p->room_dc, use_f, z->caps.ftab_id);
     if (p->set_dc != SL2_DC_NA) {
-        int set_echo = ui_dd_from_dc(p->set_dc, use_f, z->caps.ftab_id);
+        int set_echo = p->set_dc;
         if (is_active) {
-            s_ctrl_set_dd = set_echo;
+            s_ctrl_set_dc = set_echo;
             set_echo = edit_hold_echo(&s_set_hold, set_echo, now, SET_HOLD_MS);
         }
-        s.set_dd = set_echo;
+        s.set_dd = ui_dd_from_dc(set_echo, use_f, z->caps.ftab_id);
     }
     s.band_valid = (p->set_low_dc != SL2_DC_NA && p->set_high_dc != SL2_DC_NA);
     if (s.band_valid) {
-        int lo = ui_dd_from_dc(p->set_low_dc,  use_f, z->caps.ftab_id);
-        int hi = ui_dd_from_dc(p->set_high_dc, use_f, z->caps.ftab_id);
+        int lo = p->set_low_dc;
+        int hi = p->set_high_dc;
         if (is_active) {
-            s_ctrl_lo_dd = lo; s_ctrl_hi_dd = hi;
+            s_ctrl_lo_dc = lo; s_ctrl_hi_dc = hi;
             edit_hold2_echo(&s_band_hold, &lo, &hi, now, SET_HOLD_MS);
         }
-        s.set_lo_dd = lo; s.set_hi_dd = hi;
+        s.set_lo_dd = ui_dd_from_dc(lo, use_f, z->caps.ftab_id);
+        s.set_hi_dd = ui_dd_from_dc(hi, use_f, z->caps.ftab_id);
     }
+    cache_temperature_state(zi, p);
     s.fan_pct    = p->fan > 100 ? 100 : p->fan;
     s.vvane      = vvane_from_sl2(p->vane_v);
     s.hvane      = hvane_from_sl2(p->vane_h, z->caps.vane_h);
@@ -599,7 +649,10 @@ static void apply_state(int zi, const struct sl2_state_pkt *p, uint32_t received
         atomic_store(&s_ota_state_rx_ms, received_ms);
         espnow_offline_alert_reset(&s_offline_alert);
         s_use_f = use_f;
-        ui_set_state(&s);
+        ui_set_state_canonical(&s,
+            p->set_dc == SL2_DC_NA ? SL2_DC_NA : (s_set_hold.on ? s_set_hold.val : p->set_dc),
+            s.band_valid ? (s_band_hold.on ? s_band_hold.lo : p->set_low_dc) : SL2_DC_NA,
+            s.band_valid ? (s_band_hold.on ? s_band_hold.hi : p->set_high_dc) : SL2_DC_NA);
         s_last_sent = s;
         ui_set_link_state(true, espnow_client_online(), z->bond.mac, z->rssi);
     }
@@ -628,8 +681,26 @@ static const char *room_source_name(int zi) {
     return NULL;
 }
 
+static void refresh_caps_ui(const ui_caps_t *caps) {
+    ui_set_caps(caps);
+    hvac_state_t state;
+    ui_get_state(&state);
+    if (s_set_hold.on)
+        state.set_dd = canonical_setpoint_dd(s_set_hold.val, s_use_f, caps);
+    if (s_band_hold.on) {
+        state.set_lo_dd = canonical_setpoint_dd(s_band_hold.lo, s_use_f, caps);
+        state.set_hi_dd = canonical_setpoint_dd(s_band_hold.hi, s_use_f, caps);
+    }
+    if (s_set_hold.on || s_band_hold.on)
+        ui_set_state_canonical(&state, s_set_hold.on ? s_set_hold.val : SL2_DC_NA,
+            s_band_hold.on ? s_band_hold.lo : SL2_DC_NA,
+            s_band_hold.on ? s_band_hold.hi : SL2_DC_NA);
+    s_last_sent = state;
+}
+
 static void apply_caps(int zi, const struct sl2_caps_pkt *p) {
     zone_t *z = &s_z[zi];
+    if (!lvgl_port_lock(0)) return;
     z->caps.modes        = p->modes;
     z->caps.features     = p->features;
     z->caps.fan_steps    = p->fan_steps;
@@ -641,6 +712,8 @@ static void apply_caps(int zi, const struct sl2_caps_pkt *p) {
     z->caps.set_step_dc  = p->set_step_dc;
     z->caps.ftab_id      = p->ftab_id;
     z->caps.band_min_gap_dc = p->band_min_gap_dc;
+    if (zi == s_active) refresh_caps_ui(&z->caps);
+    lvgl_port_unlock();
     z->caps_seq = p->caps_seq;
     z->want_caps = false;
     if ((p->features & SL2_FEAT_ROOM_CATALOG) && zi == s_active &&
@@ -656,10 +729,6 @@ static void apply_caps(int zi, const struct sl2_caps_pkt *p) {
         z->bond.name[sizeof z->bond.name - 1] = '\0';
         z->bond.caps_seq = p->caps_seq;
         espnow_bond_set_name(z->bond.mac, z->bond.name, z->bond.caps_seq);
-    }
-    if (zi == s_active && lvgl_port_lock(0)) {
-        ui_set_caps(&z->caps);
-        lvgl_port_unlock();
     }
 }
 
@@ -1054,14 +1123,28 @@ static bool retune_adopt(uint8_t ch, const char *why) {
     return true;
 }
 
-static void cmd_put_temp(struct sl2_cmd_pkt *c, uint8_t ftab) {
-    c->mask  |= SL2_CM_TEMP;
-    c->set_dc = ui_dd_to_dc(s_set_hold.val, s_set_hold_use_f, ftab);
+static bool held_f_ambiguous(bool use_f, const ui_caps_t *caps) {
+    return use_f && ui_dd_from_dc(caps->set_min_dc, true, caps->ftab_id) >=
+                    ui_dd_from_dc(caps->set_max_dc, true, caps->ftab_id);
 }
-static void cmd_put_band(struct sl2_cmd_pkt *c, uint8_t ftab) {
+static void cmd_put_temp(struct sl2_cmd_pkt *c, const ui_caps_t *caps) {
+    if (held_f_ambiguous(s_set_hold_use_f, caps)) return;
+    c->mask  |= SL2_CM_TEMP;
+    c->set_dc = ui_setpoint_dd_to_dc(s_set_hold.val, false, 0,
+                                     caps->set_min_dc, caps->set_max_dc, caps->set_step_dc);
+}
+static void cmd_put_band(struct sl2_cmd_pkt *c, const ui_caps_t *caps) {
+    if (held_f_ambiguous(s_band_hold_use_f, caps)) return;
+    int low = ui_setpoint_dd_to_dc(s_band_hold.lo, false, 0,
+        caps->set_min_dc, caps->set_max_dc, caps->set_step_dc);
+    int high = ui_setpoint_dd_to_dc(s_band_hold.hi, false, 0,
+        caps->set_min_dc, caps->set_max_dc, caps->set_step_dc);
+    /* CAPS can invalidate a previously accepted pair. Refuse that stale edit
+     * without moving its opposite edge or replacing retained canonical intent. */
+    if (high - low < caps->band_min_gap_dc) return;
     c->mask       |= SL2_CM_TEMP_BAND;
-    c->set_low_dc  = ui_dd_to_dc(s_band_hold.lo, s_band_hold_use_f, ftab);
-    c->set_high_dc = ui_dd_to_dc(s_band_hold.hi, s_band_hold_use_f, ftab);
+    c->set_low_dc  = low;
+    c->set_high_dc = high;
 }
 
 static bool edits_pending(void) {
@@ -1069,17 +1152,19 @@ static bool edits_pending(void) {
 }
 
 static bool pending_edit_tx(struct sl2_cmd_pkt *txc, uint32_t now, bool flush) {
-    const uint8_t ftab = s_z[s_active].caps.ftab_id;
+    const ui_caps_t *caps = &s_z[s_active].caps;
     memset(txc, 0, sizeof *txc);
     txc->type = SL2_PKT_CMD; txc->version = SL2_PROTO_VERSION;
     if (edit_hold_tx_due(&s_set_hold, s_tx_sent_temp, now, EDIT_DEBOUNCE_MS, flush)) {
-        cmd_put_temp(txc, ftab);
+        cmd_put_temp(txc, caps);
         s_tx_sent_temp = s_set_hold.val;
     }
     if (edit_hold2_tx_due(&s_band_hold, s_tx_sent_lo, s_tx_sent_hi, now,
                           EDIT_DEBOUNCE_MS, flush)) {
-        cmd_put_band(txc, ftab);
-        s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi;
+        cmd_put_band(txc, caps);
+        if (txc->mask & SL2_CM_TEMP_BAND) {
+            s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi;
+        }
     }
     if (edit_hold_tx_due(&s_fan_hold, s_tx_sent_fan, now, FAN_DEBOUNCE_MS, flush)) {
         txc->mask |= SL2_CM_FAN;
@@ -1094,7 +1179,7 @@ static void resend_held_edits(int zi) {
     memset(&c, 0, sizeof c);
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
     if (!lvgl_port_lock(0)) return;
-    const uint8_t ftab = s_z[zi].caps.ftab_id;
+    const ui_caps_t *caps = &s_z[zi].caps;
     if (s_mode_hold.on) { c.mask |= SL2_CM_MODE;
                          c.mode = mode_to_sl2((hvac_mode_t)s_mode_hold.val); }
     if (s_fan_hold.on)  { c.mask |= SL2_CM_FAN;   c.fan = (uint8_t)s_fan_hold.val;
@@ -1105,9 +1190,13 @@ static void resend_held_edits(int zi) {
                          c.vane_h = hvane_to_sl2((hvane_t)s_hv_hold.val,
                                                  s_z[zi].caps.vane_h); }
     if (s_unit_hold.on) { c.mask |= SL2_CM_UNITS; c.use_f = s_unit_hold.val ? 1 : 0; }
-    if (s_set_hold.on)  { cmd_put_temp(&c, ftab); s_tx_sent_temp = s_set_hold.val; }
-    if (s_band_hold.on) { cmd_put_band(&c, ftab);
-                         s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi; }
+    if (s_set_hold.on)  { cmd_put_temp(&c, caps); s_tx_sent_temp = s_set_hold.val; }
+    if (s_band_hold.on) {
+        cmd_put_band(&c, caps);
+        if (c.mask & SL2_CM_TEMP_BAND) {
+            s_tx_sent_lo = s_band_hold.lo; s_tx_sent_hi = s_band_hold.hi;
+        }
+    }
     lvgl_port_unlock();
     if (!c.mask) return;
     ESP_LOGW(TAG, "zone %d replay epoch moved (unit rebooted) — re-asserting "
@@ -1146,11 +1235,9 @@ static void do_zone_switch(int ni) {
         ESP_LOGI(TAG, "zone switch %d -> %d warm%s (ack %lu ms ago)", oi, ni,
                  xch ? " xch-hop" : "", (unsigned long)(now_ms() - z->lastAckMs));
         if (lvgl_port_lock(0)) {
-            ui_set_caps(&z->caps);
-            ui_set_state(&z->st);
-            s_last_sent = z->st; ctrl_from(&z->st); s_use_f = z->st.use_f;
+            push_zones_ui_locked(); /* select the UI owner before seeding its coordinates */
+            restore_zone_ui(ni, &z->st);
             ui_set_link_state(true, true, z->bond.mac, z->rssi);
-            push_zones_ui_locked();
             lvgl_port_unlock();
         }
         return;
@@ -1158,19 +1245,18 @@ static void do_zone_switch(int ni) {
     ESP_LOGI(TAG, "zone switch %d -> %d resync (synced %d, zone ch %u, radio ch %u)",
              oi, ni, z->synced, z->bond.last_channel, s_channel);
     if (lvgl_port_lock(0)) {
-        ui_set_caps(&z->caps);
+        push_zones_ui_locked();
         if (hvac_state_plausible(&z->st)) {
             hvac_state_t st = z->st; st.alert = ALERT_SYNCING;
-            ui_set_state(&st);
-            s_last_sent = z->st; ctrl_from(&z->st); s_use_f = z->st.use_f;
+            restore_zone_ui(ni, &st);
         } else {
             hvac_state_t st;
             memset(&st, 0, sizeof st);
             st.alert = ALERT_SYNCING;
+            ui_set_caps(&z->caps);
             ui_set_state(&st);
         }
         ui_set_link_state(true, false, z->bond.mac, z->rssi);
-        push_zones_ui_locked();
         lvgl_port_unlock();
     }
     z->synced = false;
@@ -1533,6 +1619,8 @@ void espnow_client_on_local_edit(void) {
     if (!edit_tx_allowed(s_zn, s_z[s_active].synced)) return;
     hvac_state_t s; ui_get_state(&s);
     bool use_f = s_use_f;
+    int set_dc, low_dc, high_dc;
+    ui_get_setpoints_dc(&set_dc, &low_dc, &high_dc);
     uint32_t now = now_ms();
 
     /* A sent value suppresses duplicates only within its current hold. After
@@ -1541,28 +1629,31 @@ void espnow_client_on_local_edit(void) {
      * the UI is compared with the hold, not with the controller's value, so
      * turning back to the controller's value cancels an unsent overshoot or
      * queues a correction for one that already went out. */
-    bool set_changed = s_set_hold.on ? s.set_dd != s_set_hold.val
-                                     : s.set_dd != s_ctrl_set_dd;
-    if (set_changed) {
+    bool set_changed = s_set_hold.on ? set_dc != s_set_hold.val
+                                     : set_dc != s_ctrl_set_dc;
+    /* CAPS can normalize the displayed rails without a user movement. Only
+     * changed presentation slots may create a new temperature edit. */
+    if (set_changed && s.set_dd != s_last_sent.set_dd) {
         if (s_set_hold.on && s_tx_sent_temp == -1000 &&
-            s.set_dd == s_ctrl_set_dd) {
+            set_dc == s_ctrl_set_dc) {
             edit_hold_drop(&s_set_hold);
         } else {
             if (!s_set_hold.on) s_tx_sent_temp = -1000;
-            edit_hold_note(&s_set_hold, s.set_dd, now);
+            edit_hold_note(&s_set_hold, set_dc, now);
             s_set_hold_use_f = use_f;
         }
     }
     bool band_changed = s_band_hold.on
-        ? (s.set_lo_dd != s_band_hold.lo || s.set_hi_dd != s_band_hold.hi)
-        : (s.set_lo_dd != s_ctrl_lo_dd || s.set_hi_dd != s_ctrl_hi_dd);
-    if (band_changed) {
+        ? (low_dc != s_band_hold.lo || high_dc != s_band_hold.hi)
+        : (low_dc != s_ctrl_lo_dc || high_dc != s_ctrl_hi_dc);
+    if (band_changed && (s.set_lo_dd != s_last_sent.set_lo_dd ||
+                         s.set_hi_dd != s_last_sent.set_hi_dd)) {
         if (s_band_hold.on && s_tx_sent_lo == -1000 && s_tx_sent_hi == -1000 &&
-            s.set_lo_dd == s_ctrl_lo_dd && s.set_hi_dd == s_ctrl_hi_dd) {
+            low_dc == s_ctrl_lo_dc && high_dc == s_ctrl_hi_dc) {
             edit_hold2_drop(&s_band_hold);
         } else {
             if (!s_band_hold.on) s_tx_sent_lo = s_tx_sent_hi = -1000;
-            edit_hold2_note(&s_band_hold, s.set_lo_dd, s.set_hi_dd, now);
+            edit_hold2_note(&s_band_hold, low_dc, high_dc, now);
             s_band_hold_use_f = use_f;
         }
     }
@@ -1587,37 +1678,20 @@ void espnow_client_on_local_edit(void) {
     if (s.hvane != s_last_sent.hvane) { c.mask |= SL2_CM_VANEH;
                                        c.vane_h = hvane_to_sl2(s.hvane, s_z[s_active].caps.vane_h);
                                        edit_hold_note(&s_hv_hold, (int)s.hvane, now); }
-    if (c.mask == 0) return;
-    cmd_post(s_active, &c);
+    if (c.mask) cmd_post(s_active, &c);
     s_last_sent = s;
 }
 
 void espnow_client_on_units_edit(bool use_f) {
     if (!edit_tx_allowed(s_zn, s_z[s_active].synced)) return;
-    /* Holds, sent values, and the controller's values are display values.
-     * Every later STATE is converted with the new unit, so move them too;
-     * a flip straight back restores them exactly. */
-    static struct { int zone; ui_dd_flip_t set, sent, lo, hi, sent_lo, sent_hi, cset, clo, chi; } m;
-    if (m.zone != s_active) { memset(&m, 0, sizeof m); m.zone = s_active; }  /* zone switched */
-    const uint8_t ftab = s_z[s_active].caps.ftab_id;
-    if (s_set_hold.on) {
-        s_set_hold.val = ui_dd_flip(&m.set,  s_set_hold.val, s_set_hold_use_f, use_f, ftab);
-        s_tx_sent_temp = ui_dd_flip(&m.sent, s_tx_sent_temp, s_set_hold_use_f, use_f, ftab);
-        s_set_hold_use_f = use_f;
-    }
-    if (s_band_hold.on) {
-        s_band_hold.lo = ui_dd_flip(&m.lo,      s_band_hold.lo, s_band_hold_use_f, use_f, ftab);
-        s_band_hold.hi = ui_dd_flip(&m.hi,      s_band_hold.hi, s_band_hold_use_f, use_f, ftab);
-        s_tx_sent_lo   = ui_dd_flip(&m.sent_lo, s_tx_sent_lo,   s_band_hold_use_f, use_f, ftab);
-        s_tx_sent_hi   = ui_dd_flip(&m.sent_hi, s_tx_sent_hi,   s_band_hold_use_f, use_f, ftab);
-        s_band_hold_use_f = use_f;
-    }
-    s_ctrl_set_dd = ui_dd_flip(&m.cset, s_ctrl_set_dd, s_use_f, use_f, ftab);
-    s_ctrl_lo_dd  = ui_dd_flip(&m.clo,  s_ctrl_lo_dd,  s_use_f, use_f, ftab);
-    s_ctrl_hi_dd  = ui_dd_flip(&m.chi,  s_ctrl_hi_dd,  s_use_f, use_f, ftab);
+    /* Temperature holds, sent markers and controller comparisons are canonical.
+     * Units changes presentation only; retain each edit's original input unit. */
     edit_hold_note(&s_unit_hold, use_f ? 1 : 0, now_ms());
     s_use_f = use_f;
     s_z[s_active].st.use_f = use_f;
+    /* units_set has already changed the UI labels. A later fan edit must
+     * compare with this presentation, including normalized CAPS coordinates. */
+    ui_get_state(&s_last_sent);
     struct sl2_cmd_pkt c; memset(&c, 0, sizeof(c));
     c.type = SL2_PKT_CMD; c.version = SL2_PROTO_VERSION;
     c.mask = SL2_CM_UNITS; c.use_f = use_f ? 1 : 0;

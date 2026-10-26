@@ -84,7 +84,7 @@ static bool queue_full, lock_available, process_in_send;
 static uint32_t queue_delay_ms;
 static hvac_state_t ui_state, s_last_sent;
 static bool s_use_f;
-static int s_ctrl_set_dd, s_ctrl_lo_dd, s_ctrl_hi_dd, s_ctrl_fan;
+static int s_ctrl_set_dc, s_ctrl_lo_dc, s_ctrl_hi_dc, s_ctrl_fan;
 static edit_hold_t s_unit_hold, s_mode_hold, s_set_hold, s_fan_hold, s_vv_hold, s_hv_hold;
 static edit_hold2_t s_band_hold;
 static espnow_offline_alert_t s_offline_alert;
@@ -124,6 +124,9 @@ static bool lvgl_port_lock(unsigned wait) { (void)wait; return lock_available; }
 static void lvgl_port_unlock(void) {}
 void ui_get_state(hvac_state_t *out) { *out = ui_state; }
 void ui_set_state(const hvac_state_t *s) { ui_state = *s; }
+void ui_set_state_canonical(const hvac_state_t *s, int set, int lo, int hi) {
+    (void)set; (void)lo; (void)hi; ui_set_state(s);
+}
 void ui_set_link_state(bool bonded, bool online, const uint8_t mac[6], int rssi) {
     (void)bonded; (void)online; (void)mac; (void)rssi;
 }
@@ -306,6 +309,9 @@ with tempfile.TemporaryDirectory(prefix="serin-ota-link-health-") as build_dir:
                     + function("static bool zone_cross_channel(")
                     + function("static bool zone_acked(")
                     + function("static bool zone_rx_stale(")
+                    + function("static int canonical_setpoint_dd(")
+                    + function("static void cache_temperature_state(")
+                    + function("static void restore_zone_ui(")
                     + function("static void apply_state(")
                     + function("static void on_recv(")
                     + function("static uint8_t probe_want(")
